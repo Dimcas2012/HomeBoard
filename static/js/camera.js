@@ -109,19 +109,24 @@
       if (ev.candidate && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'ice',
-          candidate: ev.candidate,
+          candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate,
           viewer_channel: viewerChannel,
         }));
       }
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') setStatus('Streaming');
+      else if (pc.connectionState === 'failed') setStatus('WebRTC failed');
+      else if (pc.connectionState === 'connecting') setStatus('Connecting…');
     };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     ws.send(JSON.stringify({
       type: 'offer',
-      sdp: pc.localDescription,
+      sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp },
       viewer_channel: viewerChannel,
     }));
-    setStatus('Streaming');
+    setStatus('Offer sent · waiting viewer');
   }
 
   // --- Motion detection via canvas frame diff ---

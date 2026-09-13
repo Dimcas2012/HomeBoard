@@ -26,7 +26,10 @@ def camera_mode(request):
 @require_GET
 def settings_panel(request):
     cameras = Camera.objects.filter(owner=request.user)
-    codes = PairingCode.objects.filter(owner=request.user, used_at__isnull=True)
+    codes = [
+        p for p in PairingCode.objects.filter(owner=request.user, used_at__isnull=True)
+        if p.is_valid
+    ]
     return render(request, 'app_viewer/settings.html', {
         'cameras': cameras,
         'pairing_codes': codes,

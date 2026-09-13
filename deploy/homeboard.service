@@ -1,0 +1,21 @@
+[Unit]
+Description=HomeBoard Django/ASGI Application (homeboard.secboard.online)
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=exec
+User=dimcas
+Group=dimcas
+WorkingDirectory=/srv/HomeBoard
+Environment=PATH=/srv/HomeBoard/.venv/bin
+Environment=DJANGO_SETTINGS_MODULE=config.settings
+ExecStart=/srv/HomeBoard/.venv/bin/daphne -b 127.0.0.1 -p 9011 --access-log /srv/HomeBoard/logs/daphne_access.log --proxy-headers config.asgi:application
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=5
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

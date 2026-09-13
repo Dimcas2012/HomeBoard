@@ -18,8 +18,8 @@
     {% for cam in cameras %}
       <div class="tile" data-camera-id="{{ cam.id }}" data-source="{{ cam.source_type }}" data-whep="{{ cam.webrtc_play_url }}">
         <video autoplay playsinline muted></video>
-        <div class="placeholder" {% if cam.is_online and cam.source_type == 'browser' %}hidden{% endif %}>
-          {% if cam.source_type == 'rtsp' %}IP / MediaMTX{% else %}Офлайн{% endif %}
+        <div class="placeholder">
+          {% if cam.is_online and cam.source_type == 'browser' %}Підключення…{% elif cam.source_type == 'rtsp' %}IP / MediaMTX{% else %}Офлайн{% endif %}
         </div>
         <div class="tile-meta">
           <span><span class="dot {% if cam.is_online %}on{% endif %}"></span>{{ cam.name }}</span>

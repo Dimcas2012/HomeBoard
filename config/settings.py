@@ -87,17 +87,27 @@ ASGI_APPLICATION = 'config.asgi.application'
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
 
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            'hosts': [{
-                'address': REDIS_URL,
-                'protocol': 2,
-            }],
+# Single Daphne process — in-memory signaling is reliable and avoids Redis pub/sub timeouts.
+# Set CHANNEL_LAYER=redis in .env to use Redis (multi-worker).
+_channel_backend = os.getenv('CHANNEL_LAYER', 'memory').lower()
+if _channel_backend == 'redis':
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                'hosts': [REDIS_URL],
+                'capacity': 1500,
+                'expiry': 60,
+            },
         },
-    },
-}
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
+
 
 DATABASES = {
     'default': {

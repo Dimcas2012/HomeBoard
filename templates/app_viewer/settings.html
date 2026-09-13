@@ -13,11 +13,25 @@
   </header>
   <div class="settings-page">
     <h2>Browser-камери (pairing)</h2>
-    <p class="muted">Створіть код і введіть його на телефоні на сторінці <a href="{% url 'camera_mode' %}">/camera/</a>.</p>
+    <p class="muted">Створіть код і введіть його на телефоні на сторінці <a href="{% url 'camera_mode' %}">/camera/</a>. Код дійсний 60 хвилин.</p>
     <div class="row form-inline" style="margin:1rem 0">
       <input id="newCamName" value="Living Room" placeholder="Назва камери">
       <button class="btn" id="btnCreateCode" type="button">Створити код</button>
-      <span class="mono" id="createdCode"></span>
+      <span class="mono" id="createdCode" style="font-size:1.4rem;letter-spacing:.12em;font-weight:700"></span>
+    </div>
+    <div class="card-list" id="pairingList" style="margin-bottom:1.5rem">
+      {% for p in pairing_codes %}
+      {% if p.is_valid %}
+      <div class="item pairing-item">
+        <div>
+          <strong class="mono" style="font-size:1.25rem;letter-spacing:.12em">{{ p.code }}</strong>
+          <div class="muted">{{ p.camera_name }} · діє до {{ p.expires_at|date:"H:i d.m.Y" }}</div>
+        </div>
+      </div>
+      {% endif %}
+      {% empty %}
+      <div class="empty muted">Активних кодів немає</div>
+      {% endfor %}
     </div>
 
     <h2>IP / RTSP (MediaMTX)</h2>
@@ -51,18 +65,29 @@
 <script>
   const csrf = "{{ csrf_token }}";
   document.getElementById('btnCreateCode').onclick = async () => {
-    const body = new URLSearchParams({ name: document.getElementById('newCamName').value || 'Camera' });
+    const name = document.getElementById('newCamName').value || 'Camera';
+    const body = new URLSearchParams({ name });
     const res = await fetch('{% url "cameras:api_pairing" %}', {
       method: 'POST',
       headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
     });
     const data = await res.json();
-    document.getElementById('createdCode').textContent = data.code || data.error || '';
-    if (data.code) {
-      // оновити список після pairing з телефону
-      setTimeout(() => location.reload(), 15000);
+    const el = document.getElementById('createdCode');
+    if (!data.code) {
+      el.textContent = data.error || 'Помилка';
+      return;
     }
+    el.textContent = data.code;
+    const list = document.getElementById('pairingList');
+    list.querySelector('.empty')?.remove();
+    const item = document.createElement('div');
+    item.className = 'item pairing-item';
+    const expires = data.expires_at
+      ? new Date(data.expires_at).toLocaleString('uk-UA', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' })
+      : '';
+    item.innerHTML = `<div><strong class="mono" style="font-size:1.25rem;letter-spacing:.12em">${data.code}</strong><div class="muted">${data.camera_name || name} · діє до ${expires}</div></div>`;
+    list.prepend(item);
   };
   document.getElementById('btnAddRtsp').onclick = async () => {
     const res = await fetch('{% url "cameras:api_rtsp" %}', {

@@ -2,7 +2,7 @@
   const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
   const grid = document.getElementById('camera-grid');
   const toasts = document.getElementById('toasts');
-  const peers = new Map(); // cameraId -> RTCPeerConnection
+  const peers = new Map(); // cameraId -> { pc, watchTimer }
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
   function wsUrl() {
@@ -30,16 +30,29 @@
     } catch (_) { /* ignore */ }
   }
 
+  function sdpPayload(desc) {
+    if (!desc) return null;
+    return { type: desc.type, sdp: desc.sdp };
+  }
+
   function tile(cameraId) {
     return grid.querySelector(`.tile[data-camera-id="${cameraId}"]`);
   }
 
+  function setPlaceholder(el, text, hidden = false) {
+    const ph = el?.querySelector('.placeholder');
+    if (!ph) return;
+    ph.hidden = hidden;
+    if (text != null) ph.textContent = text;
+  }
+
   function ensureTile(cam) {
-    let el = tile(cam.id);
+    let el = tile(cam.id || cam.camera_id);
     if (el) return el;
+    const id = cam.id || cam.camera_id;
     el = document.createElement('div');
     el.className = 'tile';
-    el.dataset.cameraId = cam.id;
+    el.dataset.cameraId = id;
     el.dataset.source = cam.source_type || 'browser';
     el.dataset.whep = cam.webrtc_play_url || '';
     el.innerHTML = `
@@ -64,8 +77,9 @@
     pc.addTransceiver('audio', { direction: 'recvonly' });
     pc.ontrack = (ev) => {
       video.srcObject = ev.streams[0];
-      el.querySelector('.placeholder').hidden = true;
+      setPlaceholder(el, null, true);
       el.querySelector('.dot').classList.add('on');
+      video.play().catch(() => {});
     };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -75,58 +89,116 @@
       body: offer.sdp,
     });
     if (!res.ok) {
-      el.querySelector('.placeholder').textContent = 'MediaMTX offline';
+      setPlaceholder(el, 'MediaMTX offline', false);
       return;
     }
     const answer = await res.text();
     await pc.setRemoteDescription({ type: 'answer', sdp: answer });
-    peers.set(el.dataset.cameraId, pc);
+    peers.set(el.dataset.cameraId, { pc, watchTimer: null });
   }
 
-  async function watchBrowserCamera(cameraId) {
-    if (peers.has(cameraId)) return;
+  function closePeer(cameraId) {
+    const entry = peers.get(cameraId);
+    if (!entry) return;
+    if (entry.watchTimer) clearTimeout(entry.watchTimer);
+    try { entry.pc.close(); } catch (_) {}
+    peers.delete(cameraId);
+  }
+
+  async function watchBrowserCamera(cameraId, { force = false } = {}) {
+    if (!force && peers.has(cameraId)) return;
+    closePeer(cameraId);
+
+    const el = tile(cameraId);
+    if (el) setPlaceholder(el, 'Підключення…', false);
+
     const pc = new RTCPeerConnection(ICE);
-    peers.set(cameraId, pc);
+
     pc.ontrack = (ev) => {
-      const el = tile(cameraId);
-      if (!el) return;
-      el.querySelector('video').srcObject = ev.streams[0];
-      el.querySelector('.placeholder').hidden = true;
-      el.querySelector('.dot').classList.add('on');
+      const t = tile(cameraId);
+      if (!t) return;
+      const video = t.querySelector('video');
+      video.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+      setPlaceholder(t, null, true);
+      t.querySelector('.dot').classList.add('on');
+      video.play().catch(() => {});
+      const entry = peers.get(cameraId);
+      if (entry?.watchTimer) {
+        clearTimeout(entry.watchTimer);
+        entry.watchTimer = null;
+      }
     };
+
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      const t = tile(cameraId);
+      if (!t) return;
+      if (state === 'failed' || state === 'disconnected') {
+        setPlaceholder(t, 'Зʼєднання втрачено', false);
+        // one automatic retry
+        if (state === 'failed') {
+          setTimeout(() => watchBrowserCamera(cameraId, { force: true }), 1500);
+        }
+      } else if (state === 'connecting') {
+        setPlaceholder(t, 'Підключення…', false);
+      }
+    };
+
     pc.onicecandidate = (ev) => {
-      if (ev.candidate) {
+      if (ev.candidate && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'ice',
           camera_id: cameraId,
-          candidate: ev.candidate,
+          candidate: ev.candidate.toJSON ? ev.candidate.toJSON() : ev.candidate,
         }));
       }
     };
-    ws.send(JSON.stringify({ type: 'watch', camera_id: cameraId }));
+
+    const watchTimer = setTimeout(() => {
+      const t = tile(cameraId);
+      if (t && !t.querySelector('video').srcObject) {
+        setPlaceholder(t, 'Немає відео — натисніть плитку для повтору', false);
+      }
+    }, 12000);
+
+    peers.set(cameraId, { pc, watchTimer });
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'watch', camera_id: cameraId }));
+    }
   }
 
   function bindTile(el) {
     el.addEventListener('click', () => {
+      const video = el.querySelector('video');
+      if (el.dataset.source === 'browser' && !video?.srcObject) {
+        watchBrowserCamera(el.dataset.cameraId, { force: true });
+        return;
+      }
       el.classList.toggle('fullscreen');
     });
   }
 
   grid.querySelectorAll('.tile').forEach(bindTile);
 
-  const ws = new WebSocket(wsUrl());
+  let ws = new WebSocket(wsUrl());
 
-  ws.onopen = () => {
+  function connectWs() {
+    ws = new WebSocket(wsUrl());
+    ws.onopen = onOpen;
+    ws.onmessage = onMessage;
+    ws.onclose = () => setTimeout(connectWs, 2000);
+  }
+
+  function onOpen() {
     grid.querySelectorAll('.tile').forEach((el) => {
       if (el.dataset.source === 'rtsp') playWhep(el);
-      else if (el.dataset.source === 'browser') {
-        // wait for camera_online or request watch if already online (dot.on)
-        if (el.querySelector('.dot.on')) watchBrowserCamera(el.dataset.cameraId);
+      else if (el.dataset.source === 'browser' && el.querySelector('.dot.on')) {
+        watchBrowserCamera(el.dataset.cameraId, { force: true });
       }
     });
-  };
+  }
 
-  ws.onmessage = async (evt) => {
+  async function onMessage(evt) {
     const msg = JSON.parse(evt.data);
 
     if (msg.type === 'camera_list') {
@@ -134,7 +206,11 @@
         const el = ensureTile(cam);
         el.querySelector('.dot').classList.toggle('on', !!cam.is_online);
         if (cam.source_type === 'rtsp') playWhep(el);
-        else if (cam.is_online) watchBrowserCamera(cam.id);
+        else if (cam.is_online) watchBrowserCamera(cam.id, { force: true });
+        else {
+          setPlaceholder(el, 'Офлайн', false);
+          closePeer(cam.id);
+        }
       }
       return;
     }
@@ -142,8 +218,8 @@
     if (msg.type === 'camera_online') {
       const el = ensureTile(msg);
       el.querySelector('.dot').classList.add('on');
-      el.querySelector('.placeholder').textContent = 'Підключення…';
-      watchBrowserCamera(msg.camera_id);
+      setPlaceholder(el, 'Підключення…', false);
+      watchBrowserCamera(msg.camera_id, { force: true });
       return;
     }
 
@@ -151,35 +227,38 @@
       const el = tile(msg.camera_id);
       if (el) {
         el.querySelector('.dot').classList.remove('on');
-        el.querySelector('.placeholder').hidden = false;
-        el.querySelector('.placeholder').textContent = 'Офлайн';
+        setPlaceholder(el, 'Офлайн', false);
         const v = el.querySelector('video');
         v.srcObject = null;
       }
-      const pc = peers.get(msg.camera_id);
-      if (pc) { pc.close(); peers.delete(msg.camera_id); }
+      closePeer(msg.camera_id);
       return;
     }
 
     if (msg.type === 'offer' && msg.from === 'camera') {
-      const pc = peers.get(msg.camera_id);
-      if (!pc) return;
-      await pc.setRemoteDescription(msg.sdp);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      ws.send(JSON.stringify({
-        type: 'answer',
-        camera_id: msg.camera_id,
-        sdp: pc.localDescription,
-        viewer_channel: msg.viewer_channel,
-      }));
+      const entry = peers.get(msg.camera_id);
+      if (!entry) return;
+      try {
+        await entry.pc.setRemoteDescription(msg.sdp);
+        const answer = await entry.pc.createAnswer();
+        await entry.pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({
+          type: 'answer',
+          camera_id: msg.camera_id,
+          sdp: sdpPayload(entry.pc.localDescription),
+          viewer_channel: msg.viewer_channel,
+        }));
+      } catch (err) {
+        console.error('offer/answer failed', err);
+        setPlaceholder(tile(msg.camera_id), 'Помилка WebRTC', false);
+      }
       return;
     }
 
     if (msg.type === 'ice' && msg.from === 'camera') {
-      const pc = peers.get(msg.camera_id);
-      if (pc && msg.candidate) {
-        try { await pc.addIceCandidate(msg.candidate); } catch (_) {}
+      const entry = peers.get(msg.camera_id);
+      if (entry && msg.candidate) {
+        try { await entry.pc.addIceCandidate(msg.candidate); } catch (_) {}
       }
       return;
     }
@@ -193,14 +272,9 @@
         setTimeout(() => el.classList.remove('motion'), 4000);
       }
     }
-  };
+  }
 
-  // For already-online browser cams rendered by Django
-  setTimeout(() => {
-    grid.querySelectorAll('.tile[data-source="browser"] .dot.on').forEach((dot) => {
-      const id = dot.closest('.tile').dataset.cameraId;
-      if (ws.readyState === WebSocket.OPEN) watchBrowserCamera(id);
-    });
-    grid.querySelectorAll('.tile[data-source="rtsp"]').forEach(playWhep);
-  }, 500);
+  ws.onopen = onOpen;
+  ws.onmessage = onMessage;
+  ws.onclose = () => setTimeout(connectWs, 2000);
 })();
