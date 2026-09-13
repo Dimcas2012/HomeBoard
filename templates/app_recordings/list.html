@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Записи — HomeBoard{% endblock %}
+{% block content %}
+<div class="viewer-shell">
+  <header class="topbar">
+    <div class="brand">Home<span>Board</span></div>
+    <nav>
+      <a href="{% url 'viewer:index' %}">Viewer</a>
+      <a class="active" href="{% url 'recordings:list' %}">Записи</a>
+      <a href="{% url 'viewer:settings' %}">Камери</a>
+      <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
+    </nav>
+  </header>
+  <div class="recordings-page">
+    <h2>Записи</h2>
+    {% if recordings %}
+    <div class="rec-grid">
+      {% for r in recordings %}
+      <a class="rec-card" href="{% url 'recordings:playback' r.id %}">
+        <video src="{{ r.file.url }}" muted preload="metadata"></video>
+        <div class="body">
+          <strong>{{ r.camera.name }}</strong>
+          <div class="muted">{{ r.started_at }} · {{ r.get_trigger_display }}</div>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty">Записів ще немає. Увімкніть «Запис при русі» в режимі камери.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

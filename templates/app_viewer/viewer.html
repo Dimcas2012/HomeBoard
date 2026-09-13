@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}WebViewer — HomeBoard{% endblock %}
+{% block body_class %}viewer-body{% endblock %}
+{% block content %}
+<div class="viewer-shell">
+  <header class="topbar">
+    <div class="brand">Home<span>Board</span></div>
+    <nav>
+      <a class="active" href="{% url 'viewer:index' %}">Viewer</a>
+      <a href="{% url 'recordings:list' %}">Записи</a>
+      <a href="{% url 'viewer:settings' %}">Камери</a>
+      <a href="{% url 'camera_mode' %}" target="_blank" rel="noopener">Режим камери</a>
+      <span class="muted">{{ request.user.username }}</span>
+      <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
+    </nav>
+  </header>
+  <main id="camera-grid" class="grid">
+    {% for cam in cameras %}
+      <div class="tile" data-camera-id="{{ cam.id }}" data-source="{{ cam.source_type }}" data-whep="{{ cam.webrtc_play_url }}">
+        <video autoplay playsinline muted></video>
+        <div class="placeholder" {% if cam.is_online and cam.source_type == 'browser' %}hidden{% endif %}>
+          {% if cam.source_type == 'rtsp' %}IP / MediaMTX{% else %}Офлайн{% endif %}
+        </div>
+        <div class="tile-meta">
+          <span><span class="dot {% if cam.is_online %}on{% endif %}"></span>{{ cam.name }}</span>
+          <span class="muted">{{ cam.get_source_type_display }}</span>
+        </div>
+      </div>
+    {% empty %}
+      <div class="empty" style="grid-column:1/-1">
+        Немає камер. Відкрийте <a href="{% url 'viewer:settings' %}">Камери</a>, створіть код pairing і підключіть телефон на <a href="{% url 'camera_mode' %}">/camera/</a>.
+      </div>
+    {% endfor %}
+  </main>
+  <div id="toasts" class="toast-wrap"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  window.HOMEBOARD = {
+    mediamtxUrl: "{{ mediamtx_webrtc_url|escapejs }}",
+    csrfToken: "{{ csrf_token }}",
+  };
+</script>
+<script src="/static/js/viewer.js"></script>
+{% endblock %}

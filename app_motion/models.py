@@ -9,7 +9,7 @@ class MotionEvent(models.Model):
         related_name='motion_events',
     )
     detected_at = models.DateTimeField(auto_now_add=True)
-    thumbnail = models.ImageField(upload_to='thumbnails/', blank=True, null=True)
+    thumbnail = models.FileField(upload_to='thumbnails/', blank=True, null=True)
     note = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:

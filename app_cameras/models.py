@@ -1,6 +1,6 @@
 import secrets
-import string
 import uuid
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import models
@@ -12,7 +12,8 @@ def generate_device_token():
 
 
 def generate_pairing_code(length=6):
-    alphabet = string.ascii_uppercase + string.digits
+    # Без неоднозначних символів 0/O, 1/I/L
+    alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
@@ -95,22 +96,39 @@ class PairingCode(models.Model):
         return self.used_at is None and self.expires_at > timezone.now()
 
     @classmethod
-    def create_for_user(cls, user, camera_name='Camera', minutes=30):
+    def create_for_user(cls, user, camera_name='Camera', minutes=60):
         return cls.objects.create(
             owner=user,
             camera_name=camera_name,
-            expires_at=timezone.now() + timezone.timedelta(minutes=minutes),
+            expires_at=timezone.now() + timedelta(minutes=minutes),
+            code=generate_pairing_code(),
         )
 
     def consume(self):
-        if not self.is_valid:
-            raise ValueError('Pairing code is invalid or expired')
-        camera = Camera.objects.create(
-            owner=self.owner,
-            name=self.camera_name,
-            source_type=Camera.SourceType.BROWSER,
-        )
-        self.used_at = timezone.now()
-        self.created_camera = camera
-        self.save(update_fields=['used_at', 'created_camera'])
-        return camera
+        """Activate pairing. If already used, re-return existing camera credentials."""
+        from django.db import transaction
+
+        with transaction.atomic():
+            pairing = (
+                PairingCode.objects.select_for_update()
+                .select_related('created_camera')
+                .get(pk=self.pk)
+            )
+            if pairing.created_camera_id:
+                return pairing.created_camera
+
+            if pairing.used_at is not None:
+                raise ValueError('Код уже використано')
+
+            if pairing.expires_at <= timezone.now():
+                raise ValueError('Код прострочений — створіть новий у Камерах')
+
+            camera = Camera.objects.create(
+                owner=pairing.owner,
+                name=pairing.camera_name,
+                source_type=Camera.SourceType.BROWSER,
+            )
+            pairing.used_at = timezone.now()
+            pairing.created_camera = camera
+            pairing.save(update_fields=['used_at', 'created_camera'])
+            return camera

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Камери — HomeBoard{% endblock %}
+{% block content %}
+<div class="viewer-shell">
+  <header class="topbar">
+    <div class="brand">Home<span>Board</span></div>
+    <nav>
+      <a href="{% url 'viewer:index' %}">Viewer</a>
+      <a href="{% url 'recordings:list' %}">Записи</a>
+      <a class="active" href="{% url 'viewer:settings' %}">Камери</a>
+      <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
+    </nav>
+  </header>
+  <div class="settings-page">
+    <h2>Browser-камери (pairing)</h2>
+    <p class="muted">Створіть код і введіть його на телефоні на сторінці <a href="{% url 'camera_mode' %}">/camera/</a>.</p>
+    <div class="row form-inline" style="margin:1rem 0">
+      <input id="newCamName" value="Living Room" placeholder="Назва камери">
+      <button class="btn" id="btnCreateCode" type="button">Створити код</button>
+      <span class="mono" id="createdCode"></span>
+    </div>
+
+    <h2>IP / RTSP (MediaMTX)</h2>
+    <p class="muted">WebRTC URL: <code>{{ mediamtx_webrtc_url }}</code>. Запустіть MediaMTX з <code>mediamtx/mediamtx.yml</code>.</p>
+    <div class="row form-inline" style="margin:1rem 0">
+      <input id="rtspName" placeholder="Назва">
+      <input id="rtspUrl" placeholder="rtsp://user:pass@ip:554/stream" style="min-width:280px">
+      <input id="rtspPath" placeholder="path (cam1)">
+      <button class="btn" id="btnAddRtsp" type="button">Додати</button>
+    </div>
+
+    <h2>Ваші камери</h2>
+    <div class="card-list" id="camList">
+      {% for cam in cameras %}
+      <div class="item" data-id="{{ cam.id }}">
+        <div>
+          <strong>{{ cam.name }}</strong>
+          <div class="muted">{{ cam.get_source_type_display }} · {% if cam.is_online %}online{% else %}offline{% endif %}</div>
+          {% if cam.source_type == 'rtsp' %}
+            <div class="muted mono">{{ cam.rtsp_url }} → {{ cam.mediamtx_path }}</div>
+          {% endif %}
+        </div>
+        <button class="btn secondary btn-del" type="button">Видалити</button>
+      </div>
+      {% empty %}
+      <div class="empty">Поки немає камер</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+<script>
+  const csrf = "{{ csrf_token }}";
+  document.getElementById('btnCreateCode').onclick = async () => {
+    const body = new URLSearchParams({ name: document.getElementById('newCamName').value || 'Camera' });
+    const res = await fetch('{% url "cameras:api_pairing" %}', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    const data = await res.json();
+    document.getElementById('createdCode').textContent = data.code || data.error || '';
+    if (data.code) {
+      // оновити список після pairing з телефону
+      setTimeout(() => location.reload(), 15000);
+    }
+  };
+  document.getElementById('btnAddRtsp').onclick = async () => {
+    const res = await fetch('{% url "cameras:api_rtsp" %}', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: document.getElementById('rtspName').value,
+        rtsp_url: document.getElementById('rtspUrl').value,
+        mediamtx_path: document.getElementById('rtspPath').value,
+      }),
+    });
+    if (res.ok) location.reload();
+    else alert((await res.json()).error || 'Помилка');
+  };
+  document.querySelectorAll('.btn-del').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.closest('.item').dataset.id;
+      await fetch(`/cameras/api/${id}/delete/`, { method: 'POST', headers: { 'X-CSRFToken': csrf } });
+      location.reload();
+    };
+  });
+</script>
+{% endblock %}

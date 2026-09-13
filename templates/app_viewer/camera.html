@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Режим камери — HomeBoard{% endblock %}
+{% block content %}
+<div class="camera-shell">
+  <header class="topbar">
+    <div class="brand">Home<span>Board</span> Camera</div>
+    <div class="status-pill" id="status">Не підключено</div>
+  </header>
+  <div class="preview-wrap">
+    <video id="localVideo" autoplay playsinline muted></video>
+  </div>
+  <section class="panel">
+    <div id="secure-hint" class="muted" style="margin-bottom:.75rem" hidden></div>
+    <div id="pair-form" class="row form-inline">
+      <input id="pairCode" maxlength="12" placeholder="Код pairing" class="mono" autocomplete="off">
+      <button class="btn" id="btnPair" type="button">Підключити</button>
+    </div>
+    <div id="live-controls" class="row" hidden>
+      <button class="btn" id="btnStart" type="button">Старт стріму</button>
+      <button class="btn secondary" id="btnStop" type="button" disabled>Стоп</button>
+      <button class="btn secondary" id="btnReset" type="button">Інший код</button>
+      <label class="status-pill"><input type="checkbox" id="motionEnabled" checked> Motion</label>
+      <label class="status-pill"><input type="checkbox" id="recordOnMotion" checked> Запис при русі</label>
+      <span class="muted" id="camName"></span>
+    </div>
+  </section>
+</div>
+<script src="/static/js/camera.js"></script>
+{% endblock %}

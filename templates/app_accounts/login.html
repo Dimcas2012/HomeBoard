@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Вхід — HomeBoard{% endblock %}
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-card">
+    <h1 class="brand">Home<span>Board</span></h1>
+    <p class="lede">Монітор безпеки для дому</p>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+      <label for="id_username">Логін</label>
+      {{ form.username }}
+      {{ form.username.errors }}
+      <label for="id_password">Пароль</label>
+      {{ form.password }}
+      {{ form.password.errors }}
+      <button class="btn block" type="submit">Увійти</button>
+    </form>
+    <p class="muted" style="margin-top:1rem;text-align:center">
+      Немає акаунта? <a href="{% url 'accounts:signup' %}">Реєстрація</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

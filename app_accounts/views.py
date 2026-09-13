@@ -4,6 +4,8 @@ from django.contrib.auth.views import LoginView, LogoutView
 from django.shortcuts import redirect, render
 from django.urls import reverse_lazy
 from django.views import View
+from django.views.decorators.http import require_POST
+from django.utils.decorators import method_decorator
 
 
 class SignUpView(View):
@@ -29,5 +31,6 @@ class SignInView(LoginView):
     authentication_form = AuthenticationForm
 
 
+@method_decorator(require_POST, name='dispatch')
 class SignOutView(LogoutView):
     next_page = reverse_lazy('accounts:login')

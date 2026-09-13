@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Playback — HomeBoard{% endblock %}
+{% block content %}
+<div class="viewer-shell">
+  <header class="topbar">
+    <div class="brand">Home<span>Board</span></div>
+    <nav>
+      <a href="{% url 'recordings:list' %}">← До записів</a>
+      <a href="{% url 'viewer:index' %}">Viewer</a>
+    </nav>
+  </header>
+  <div class="recordings-page">
+    <h2>{{ recording.camera.name }}</h2>
+    <p class="muted">{{ recording.started_at }} · {{ recording.get_trigger_display }}</p>
+    <video controls autoplay style="width:100%;max-height:75vh;background:#000;border-radius:12px" src="{{ recording.file.url }}"></video>
+  </div>
+</div>
+{% endblock %}

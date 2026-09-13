@@ -26,6 +26,15 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'CSRF_TRUSTED_ORIGINS',
+        'https://10.1.10.123:8007,http://10.1.10.123:8007,https://127.0.0.1:8007,http://127.0.0.1:8007',
+    ).split(',')
+    if origin.strip()
+]
+
 APP_PREFIX = 'app_'
 
 INSTALLED_APPS = [
@@ -82,7 +91,10 @@ CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [REDIS_URL],
+            'hosts': [{
+                'address': REDIS_URL,
+                'protocol': 2,
+            }],
         },
     },
 }

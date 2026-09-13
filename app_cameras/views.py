@@ -3,6 +3,7 @@ import json
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 
 from .models import Camera, PairingCode
@@ -20,6 +21,7 @@ def create_pairing_code(request):
     })
 
 
+@csrf_exempt
 @require_POST
 def pair_camera(request):
     """Public endpoint: phone uses pairing code to register as a camera."""
@@ -29,11 +31,18 @@ def pair_camera(request):
         payload = request.POST
 
     code = (payload.get('code') or '').strip().upper()
-    pairing = get_object_or_404(PairingCode, code=code)
-    if not pairing.is_valid:
-        return JsonResponse({'error': 'Код недійсний або прострочений'}, status=400)
+    if not code:
+        return JsonResponse({'error': 'Введіть код pairing'}, status=400)
 
-    camera = pairing.consume()
+    pairing = PairingCode.objects.filter(code=code).select_related('created_camera').first()
+    if not pairing:
+        return JsonResponse({'error': 'Код не знайдено'}, status=404)
+
+    try:
+        camera = pairing.consume()
+    except ValueError as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+
     return JsonResponse({
         'camera_id': str(camera.id),
         'device_token': camera.device_token,
@@ -83,12 +92,19 @@ def create_rtsp_camera(request):
         mediamtx_path=mediamtx_path or name.lower().replace(' ', '-'),
         is_online=True,
     )
+    # Regenerate MediaMTX config so path matches DB
+    try:
+        from django.core.management import call_command
+        call_command('sync_mediamtx')
+    except Exception:
+        pass
     return JsonResponse({
         'id': str(camera.id),
         'name': camera.name,
         'webrtc_play_url': camera.webrtc_play_url,
         'mediamtx_path': camera.mediamtx_path,
         'rtsp_url': camera.rtsp_url,
+        'hint': 'Перезапустіть MediaMTX після зміни RTSP-камер (mediamtx\\run.bat)',
     })
 
 
