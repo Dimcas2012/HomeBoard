@@ -190,11 +190,59 @@ a:hover { text-decoration: underline; }
   background: #000;
   min-height: 60vh;
 }
-.preview-wrap video {
+.preview-wrap video,
+.preview-wrap canvas {
   width: 100%;
   height: min(70vh, 720px);
   object-fit: cover;
   background: #000;
+  display: block;
+}
+.preview-wrap video.mirror {
+  transform: scaleX(-1);
+}
+.preview-wrap.dual-mode #localVideo,
+.preview-wrap.dual-mode #pipVideo {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.preview-wrap.dual-mode #composeCanvas {
+  display: block;
+}
+.facing-pick {
+  gap: .5rem;
+}
+.facing-pick select {
+  background: #0d131c;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: .35rem .5rem;
+  font: inherit;
+}
+.local-panel {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.local-player {
+  width: 100%;
+  max-height: 280px;
+  margin-top: 1rem;
+  background: #000;
+  border-radius: 10px;
+}
+.local-seg-actions {
+  display: flex;
+  gap: .4rem;
+  flex-wrap: wrap;
+}
+.local-seg-actions .btn {
+  padding: .4rem .65rem;
+  font-size: .85rem;
 }
 .panel {
   padding: 1rem 1.25rem 1.5rem;

@@ -6,8 +6,10 @@
     <div class="brand">Home<span>Board</span> Camera</div>
     <div class="status-pill" id="status">Не підключено</div>
   </header>
-  <div class="preview-wrap">
+  <div class="preview-wrap" id="previewWrap">
     <video id="localVideo" autoplay playsinline muted></video>
+    <video id="pipVideo" autoplay playsinline muted hidden></video>
+    <canvas id="composeCanvas" hidden></canvas>
   </div>
   <section class="panel">
     <div id="secure-hint" class="muted" style="margin-bottom:.75rem" hidden></div>
@@ -16,14 +18,52 @@
       <button class="btn" id="btnPair" type="button">Підключити</button>
     </div>
     <div id="live-controls" class="row" hidden>
+      <label class="status-pill">
+        <input type="checkbox" id="dualCam"> Обидві камери
+      </label>
+      <label class="status-pill facing-pick">
+        <span id="facingLabel">Камера</span>
+        <select id="facingSelect" aria-label="Фронтальна або задня камера">
+          <option value="user">Фронтальна</option>
+          <option value="environment" selected>Задня</option>
+        </select>
+      </label>
+      <button class="btn secondary" id="btnFlip" type="button" title="Перемкнути / поміняти місцями">⇄</button>
       <button class="btn" id="btnStart" type="button">Старт стріму</button>
       <button class="btn secondary" id="btnStop" type="button" disabled>Стоп</button>
       <button class="btn secondary" id="btnReset" type="button">Інший код</button>
       <label class="status-pill"><input type="checkbox" id="motionEnabled" checked> Motion</label>
       <label class="status-pill"><input type="checkbox" id="recordOnMotion" checked> Запис при русі</label>
+      <label class="status-pill"><input type="checkbox" id="localLoop"> Локальний цикл</label>
+      <label class="status-pill facing-pick">
+        Ліміт
+        <select id="localMaxMb" aria-label="Ліміт локального сховища">
+          <option value="200">200 МБ</option>
+          <option value="500" selected>500 МБ</option>
+          <option value="1024">1 ГБ</option>
+          <option value="2048">2 ГБ</option>
+        </select>
+      </label>
+      <span class="muted" id="localUsage">Локально: —</span>
+      <button class="btn secondary" id="btnLocalList" type="button">Локальні записи</button>
       <span class="muted" id="camName"></span>
+    </div>
+    <p class="muted" id="dualHint" style="margin:.65rem 0 0;font-size:.85rem" hidden>
+      Обидві камери зводяться в один стрім (велика + PiP). Не всі телефони дозволяють дві камери одночасно.
+    </p>
+    <p class="muted" id="localHint" style="margin:.65rem 0 0;font-size:.85rem" hidden>
+      Безперервний запис у памʼять браузера сегментами ~20 с. При досягненні ліміту найстаріші сегменти видаляються (цикл перезапису).
+    </p>
+    <div id="localPanel" class="local-panel" hidden>
+      <div class="row" style="justify-content:space-between;margin-bottom:.75rem">
+        <strong>Локальні сегменти</strong>
+        <button class="btn secondary" id="btnLocalClear" type="button">Очистити все</button>
+      </div>
+      <div id="localList" class="card-list"></div>
+      <video id="localPlayer" class="local-player" controls playsinline></video>
     </div>
   </section>
 </div>
+<script src="/static/js/local_store.js"></script>
 <script src="/static/js/camera.js"></script>
 {% endblock %}

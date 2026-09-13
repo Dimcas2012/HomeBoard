@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Sum
@@ -38,7 +40,7 @@ class Recording(models.Model):
     @classmethod
     def enforce_retention(cls, owner):
         days = settings.RECORDING_RETENTION_DAYS
-        cutoff = timezone.now() - timezone.timedelta(days=days)
+        cutoff = timezone.now() - timedelta(days=days)
         old = cls.objects.filter(camera__owner=owner, started_at__lt=cutoff)
         for rec in old:
             if rec.file:
