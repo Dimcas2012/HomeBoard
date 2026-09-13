@@ -1,0 +1,12 @@
+from django.urls import path
+
+from . import views
+
+app_name = 'recordings'
+
+urlpatterns = [
+    path('', views.recordings_page, name='list'),
+    path('api/', views.recordings_api, name='api_list'),
+    path('api/upload/', views.upload_recording, name='api_upload'),
+    path('<int:recording_id>/', views.playback, name='playback'),
+]
