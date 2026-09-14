@@ -12,6 +12,15 @@ from app_cameras.models import Camera
 from .models import MotionEvent
 
 
+def _notify_telegram(event, sectors, score):
+    try:
+        from app_integration.services import notify_motion
+        notify_motion(event, sectors=sectors, score=score)
+    except Exception:
+        # Never fail motion report because of integrations.
+        pass
+
+
 def _auth_camera(request):
     camera_id = request.headers.get('X-Camera-Id') or request.POST.get('camera_id')
     token = request.headers.get('X-Device-Token') or request.POST.get('device_token')
@@ -92,6 +101,7 @@ def report_motion(request):
             },
         },
     )
+    _notify_telegram(event, sectors, score_f)
     return JsonResponse({'ok': True, 'event_id': event.id, 'sectors': sectors})
 
 

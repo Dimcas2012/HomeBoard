@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'app_viewer',
     'app_motion',
     'app_recordings',
+    'app_integration.apps.AppIntegrationConfig',
 ]
 
 MIDDLEWARE = [

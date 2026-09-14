@@ -1,0 +1,317 @@
+{% extends "base.html" %}
+{% block title %}Telegram — HomeBoard{% endblock %}
+{% block content %}
+<div class="viewer-shell">
+  <header class="topbar">
+    <div class="brand">Home<span>Board</span></div>
+    <nav>
+      <a href="{% url 'viewer:index' %}">Viewer</a>
+      <a href="{% url 'recordings:list' %}">Записи</a>
+      <a href="{% url 'viewer:settings' %}">Камери</a>
+      <a class="active" href="{% url 'integration:telegram' %}">Інтеграції</a>
+      <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
+    </nav>
+  </header>
+
+  <div class="settings-page">
+    <h2>Telegram Bot</h2>
+    <p class="muted">
+      Підключіть бота для сповіщень про рух. Створіть бота в <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>,
+      скопіюйте token і привʼяжіть чат.
+    </p>
+
+    <div class="integ-card">
+      <div class="integ-status" id="integStatus">
+        <span class="dot" id="integDot"></span>
+        <span id="integStatusText">Перевірка…</span>
+      </div>
+
+      <label class="motion-field">
+        <span>Bot token</span>
+        <input id="botToken" class="integ-input" type="password" autocomplete="off" placeholder="123456:AA…">
+        <span class="muted motion-hint">Зберігається лише для вашого акаунта. Залиште порожнім, щоб не змінювати.</span>
+      </label>
+      <div class="row" style="margin:.35rem 0 1rem">
+        <button class="btn" type="button" id="btnVerify">Перевірити token</button>
+        <button class="btn secondary" type="button" id="btnSaveToken">Зберегти</button>
+        <span class="muted" id="botMeta"></span>
+      </div>
+
+      <label class="ctrl-check" style="margin-bottom:.5rem">
+        <input type="checkbox" id="isEnabled"> Увімкнути сповіщення
+      </label>
+      <label class="ctrl-check" style="margin-bottom:.5rem">
+        <input type="checkbox" id="notifyMotion" checked> Motion alerts
+      </label>
+
+      <h3 style="margin:1.25rem 0 .5rem">Привʼязка чату</h3>
+      <p class="muted" style="margin-bottom:.75rem">
+        1) Відкрийте бота → надішліть <code id="startCmd">/start CODE</code><br>
+        2) Натисніть «Знайти чат», або вставте <code>chat_id</code> вручну.
+      </p>
+      <div class="row form-inline" style="margin-bottom:.75rem">
+        <a class="btn" id="deepLink" href="#" target="_blank" rel="noopener">Відкрити бота</a>
+        <button class="btn secondary" type="button" id="btnRotate">Новий код</button>
+        <button class="btn" type="button" id="btnFindChat">Знайти чат</button>
+      </div>
+      <label class="motion-field">
+        <span>Chat ID</span>
+        <input id="chatId" class="integ-input" type="text" placeholder="-100… або 123456789">
+      </label>
+      <div class="row" style="margin-top:.75rem">
+        <button class="btn" type="button" id="btnSaveChat">Зберегти чат</button>
+        <button class="btn secondary" type="button" id="btnTest">Тест повідомлення</button>
+        <button class="btn secondary" type="button" id="btnDisconnect">Відключити чат</button>
+      </div>
+
+      <h3 style="margin:1.5rem 0 .5rem">Камери → чат</h3>
+      <p class="muted" style="margin-bottom:.65rem">Оберіть, з яких камер надсилати алерти в Telegram.</p>
+      <label class="ctrl-check" style="margin-bottom:.5rem">
+        <input type="checkbox" id="notifyAllCameras" checked> Усі камери
+      </label>
+      <div id="cameraList" class="integ-cam-list"></div>
+
+      <h3 style="margin:1.5rem 0 .5rem">Медіа в чаті</h3>
+      <label class="ctrl-check" style="margin-bottom:.5rem">
+        <input type="checkbox" id="sendScreenshot" checked> Надсилати скріншот
+      </label>
+      <label class="ctrl-check" style="margin-bottom:.75rem">
+        <input type="checkbox" id="sendVideoLink" checked> Надсилати посилання на відео / записи
+      </label>
+      <label class="motion-field">
+        <span>Якість JPEG <strong id="qualityLabel">70</strong>%</span>
+        <input type="range" id="imageQuality" min="20" max="95" step="5" value="70">
+        <span class="muted motion-hint">Нижча якість — швидше і менше трафіку; вища — чіткіший кадр.</span>
+      </label>
+      <label class="motion-field">
+        <span>Макс. ширина зображення</span>
+        <select id="imageMaxWidth" class="integ-input">
+          <option value="640">640 px (швидко)</option>
+          <option value="960">960 px</option>
+          <option value="1280" selected>1280 px (баланс)</option>
+          <option value="1600">1600 px</option>
+          <option value="1920">1920 px (максимум)</option>
+        </select>
+      </label>
+      <div class="row" style="margin-top:.5rem">
+        <button class="btn" type="button" id="btnSavePrefs">Зберегти налаштування</button>
+      </div>
+
+      <p class="muted" id="integError" style="margin-top:1rem;color:#ff8fa3"></p>
+      <p class="muted" id="integHint" style="margin-top:.5rem"></p>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+  const csrf = "{{ csrf_token }}";
+  let state = {{ payload_json|safe }};
+
+  const el = (id) => document.getElementById(id);
+
+  function selectedCameraIds() {
+    return [...document.querySelectorAll('#cameraList input[data-cam-id]:checked')]
+      .map((n) => n.dataset.camId);
+  }
+
+  function renderCameras(s) {
+    const box = el('cameraList');
+    const cams = s.cameras || [];
+    if (!cams.length) {
+      box.innerHTML = '<div class="muted">Немає камер. Додайте їх у розділі «Камери».</div>';
+      return;
+    }
+    const all = !!s.notify_all_cameras;
+    box.innerHTML = cams.map((c) => `
+      <label class="ctrl-check integ-cam-item">
+        <input type="checkbox" data-cam-id="${c.id}" ${all || c.selected ? 'checked' : ''} ${all ? 'disabled' : ''}>
+        <span>
+          <strong>${c.name}</strong>
+          <span class="muted"> · ${c.source_type}${c.is_online ? ' · online' : ''}</span>
+        </span>
+      </label>
+    `).join('');
+  }
+
+  function prefsBody() {
+    return {
+      is_enabled: el('isEnabled').checked,
+      notify_motion: el('notifyMotion').checked,
+      notify_all_cameras: el('notifyAllCameras').checked,
+      camera_ids: selectedCameraIds(),
+      send_screenshot: el('sendScreenshot').checked,
+      send_video_link: el('sendVideoLink').checked,
+      image_quality: Number(el('imageQuality').value),
+      image_max_width: Number(el('imageMaxWidth').value),
+      chat_id: el('chatId').value.trim(),
+    };
+  }
+
+  function apply(s) {
+    state = s || state;
+    el('botMeta').textContent = state.bot_username
+      ? `@${state.bot_username}` + (state.has_token ? ` · token ${state.bot_token_masked}` : '')
+      : (state.has_token ? `token ${state.bot_token_masked}` : 'token не задано');
+    el('isEnabled').checked = !!state.is_enabled;
+    el('notifyMotion').checked = !!state.notify_motion;
+    el('notifyAllCameras').checked = state.notify_all_cameras !== false;
+    el('sendScreenshot').checked = state.send_screenshot !== false;
+    el('sendVideoLink').checked = state.send_video_link !== false;
+    el('imageQuality').value = String(state.image_quality || 70);
+    el('qualityLabel').textContent = String(state.image_quality || 70);
+    el('imageMaxWidth').value = String(state.image_max_width || 1280);
+    el('chatId').value = state.chat_id || '';
+    el('startCmd').textContent = `/start ${state.link_code}`;
+    const link = el('deepLink');
+    if (state.deep_link) {
+      link.href = state.deep_link;
+      link.classList.remove('disabled');
+    } else {
+      link.href = '#';
+      link.classList.add('disabled');
+    }
+    renderCameras(state);
+    const ready = !!state.is_ready;
+    el('integDot').classList.toggle('on', ready);
+    const camCount = state.notify_all_cameras
+      ? 'усі камери'
+      : `${(state.camera_ids || []).length} кам.`;
+    el('integStatusText').textContent = ready
+      ? `Підключено · ${state.chat_title || state.chat_id} · ${camCount}`
+      : (state.has_token ? 'Token OK · очікує чат' : 'Не налаштовано');
+    el('integError').textContent = state.last_error || '';
+    el('integHint').textContent = state.last_ok_at
+      ? `Остання успішна відповідь Telegram: ${state.last_ok_at}`
+      : '';
+  }
+
+  async function post(url, body) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-CSRFToken': csrf,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.integration) apply(data.integration);
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  el('btnVerify').onclick = async () => {
+    try {
+      el('integError').textContent = '';
+      await post('{% url "integration:api_telegram_verify" %}', {
+        bot_token: el('botToken').value.trim(),
+      });
+      el('botToken').value = '';
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('btnSaveToken').onclick = async () => {
+    try {
+      el('integError').textContent = '';
+      await post('{% url "integration:api_telegram_save" %}', {
+        bot_token: el('botToken').value.trim(),
+        ...prefsBody(),
+      });
+      el('botToken').value = '';
+      el('integHint').textContent = 'Збережено';
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('btnSaveChat').onclick = async () => {
+    try {
+      el('integError').textContent = '';
+      await post('{% url "integration:api_telegram_save" %}', prefsBody());
+      el('integHint').textContent = 'Чат збережено';
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('btnSavePrefs').onclick = async () => {
+    try {
+      el('integError').textContent = '';
+      await post('{% url "integration:api_telegram_save" %}', prefsBody());
+      el('integHint').textContent = 'Налаштування камер/якості збережено';
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('btnFindChat').onclick = async () => {
+    try {
+      el('integError').textContent = '';
+      el('integHint').textContent = 'Шукаю /start у updates…';
+      await post('{% url "integration:api_telegram_find_chat" %}', {});
+      el('integHint').textContent = 'Чат знайдено';
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('btnTest').onclick = async () => {
+    try {
+      el('integError').textContent = '';
+      await post('{% url "integration:api_telegram_test" %}', {});
+      el('integHint').textContent = 'Тестове повідомлення надіслано';
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('btnRotate').onclick = async () => {
+    try {
+      await post('{% url "integration:api_telegram_rotate_code" %}', {});
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('btnDisconnect').onclick = async () => {
+    if (!confirm('Відключити Telegram-чат?')) return;
+    try {
+      await post('{% url "integration:api_telegram_disconnect" %}', {});
+    } catch (err) {
+      el('integError').textContent = err.message;
+    }
+  };
+
+  el('notifyAllCameras').onchange = () => {
+    renderCameras({
+      ...state,
+      notify_all_cameras: el('notifyAllCameras').checked,
+      cameras: (state.cameras || []).map((c) => ({
+        ...c,
+        selected: selectedCameraIds().includes(c.id) || el('notifyAllCameras').checked,
+      })),
+    });
+  };
+
+  el('imageQuality').oninput = () => {
+    el('qualityLabel').textContent = el('imageQuality').value;
+  };
+
+  ['isEnabled', 'notifyMotion', 'sendScreenshot', 'sendVideoLink'].forEach((id) => {
+    el(id).onchange = async () => {
+      try {
+        await post('{% url "integration:api_telegram_save" %}', prefsBody());
+      } catch (err) {
+        el('integError').textContent = err.message;
+      }
+    };
+  });
+
+  apply(state);
+})();
+</script>
+{% endblock %}

@@ -9,6 +9,7 @@
       <a class="active" href="{% url 'viewer:index' %}">Viewer</a>
       <a href="{% url 'recordings:list' %}">Записи</a>
       <a href="{% url 'viewer:settings' %}">Камери</a>
+      <a href="{% url 'integration:telegram' %}">Інтеграції</a>
       <a href="{% url 'camera_mode' %}" target="_blank" rel="noopener">Режим камери</a>
       <span class="muted">{{ request.user.username }}</span>
       <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
@@ -65,6 +66,21 @@
         <button class="btn secondary" type="button" data-act="sectors_all">Усі</button>
         <button class="btn secondary" type="button" data-act="sectors_none">Жодного</button>
       </div>
+      <label class="ctrl-check" style="margin-top:.65rem">
+        <input type="checkbox" data-act="motion_schedule_enabled"> Розклад фіксації
+      </label>
+      <div id="ctrlMotionDays" class="motion-days ctrl-days" aria-label="Дні фіксації"></div>
+      <div class="ctrl-row" style="margin-top:.35rem;align-items:flex-end">
+        <label class="muted" style="flex:1">
+          З
+          <select data-act="motion_start_hour" class="integ-input" style="margin-top:.25rem"></select>
+        </label>
+        <label class="muted" style="flex:1">
+          До
+          <select data-act="motion_end_hour" class="integ-input" style="margin-top:.25rem"></select>
+        </label>
+      </div>
+      <p class="muted" id="ctrlScheduleHint" style="font-size:.8rem;margin:.25rem 0 0"></p>
     </div>
     <label class="ctrl-check"><input type="checkbox" data-act="torch"> Ліхтарик</label>
     <label class="ctrl-check"><input type="checkbox" data-act="eco"> Економ-режим (екран)</label>

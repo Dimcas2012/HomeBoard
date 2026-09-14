@@ -8,11 +8,47 @@
       <a href="{% url 'viewer:index' %}">Viewer</a>
       <a class="active" href="{% url 'recordings:list' %}">Записи</a>
       <a href="{% url 'viewer:settings' %}">Камери</a>
+      <a href="{% url 'integration:telegram' %}">Інтеграції</a>
       <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
     </nav>
   </header>
   <div class="recordings-page">
     <h2>Записи</h2>
+
+    <div class="integ-card" style="margin:1rem 0 1.5rem;max-width:720px">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.75rem">
+        <strong>Сховище на сервері</strong>
+        <span class="muted" id="storageMeta">—</span>
+      </div>
+      <div class="storage-bar" aria-hidden="true">
+        <div class="storage-bar-fill" id="storageBar"></div>
+      </div>
+      <p class="muted" id="storageUsage" style="margin:.5rem 0 1rem;font-size:.9rem">Завантаження…</p>
+
+      <label class="ctrl-check" style="margin-bottom:.65rem">
+        <input type="checkbox" id="cyclicOverwrite" checked>
+        Циклічний перезапис (видаляти найстаріші при перевищенні ліміту)
+      </label>
+
+      <div class="row" style="gap:1rem;align-items:flex-end;margin-bottom:.75rem">
+        <label class="motion-field" style="margin:0;flex:1;min-width:140px">
+          <span>Ліміт памʼяті (ГБ)</span>
+          <input id="maxGb" class="integ-input" type="number" min="0.5" max="500" step="0.5" value="10">
+        </label>
+        <label class="motion-field" style="margin:0;flex:1;min-width:140px">
+          <span>Зберігати днів (0 = без ліміту по часу)</span>
+          <input id="retentionDays" class="integ-input" type="number" min="0" max="3650" step="1" value="14">
+        </label>
+      </div>
+
+      <div class="row">
+        <button class="btn" type="button" id="btnSaveStorage">Зберегти</button>
+        <button class="btn secondary" type="button" id="btnApplyNow">Застосувати очистку зараз</button>
+      </div>
+      <p class="muted" id="storageHint" style="margin-top:.75rem;font-size:.85rem"></p>
+      <p class="muted" id="storageError" style="margin-top:.35rem;color:#ff8fa3;font-size:.85rem"></p>
+    </div>
+
     {% if recordings %}
     <div class="rec-grid">
       {% for r in recordings %}
@@ -20,7 +56,7 @@
         <video src="{{ r.file.url }}" muted preload="metadata"></video>
         <div class="body">
           <strong>{{ r.camera.name }}</strong>
-          <div class="muted">{{ r.started_at }} · {{ r.get_trigger_display }}</div>
+          <div class="muted">{{ r.started_at }} · {{ r.get_trigger_display }} · {{ r.size_bytes|filesizeformat }}</div>
         </div>
       </a>
       {% endfor %}
@@ -30,4 +66,78 @@
     {% endif %}
   </div>
 </div>
+<script>
+(() => {
+  const csrf = "{{ csrf_token }}";
+  let storage = {{ storage_json|safe }};
+
+  const el = (id) => document.getElementById(id);
+
+  function fmtGb(n) {
+    const v = Number(n) || 0;
+    return (Math.round(v * 1000) / 1000).toFixed(v >= 10 ? 1 : 2);
+  }
+
+  function apply(s) {
+    storage = s || storage;
+    el('cyclicOverwrite').checked = !!storage.cyclic_overwrite;
+    el('maxGb').value = String(storage.max_gb ?? 10);
+    el('retentionDays').value = String(storage.retention_days ?? 14);
+    const pct = Math.min(100, Math.max(0, Number(storage.usage_percent) || 0));
+    el('storageBar').style.width = pct + '%';
+    el('storageBar').classList.toggle('warn', pct >= 80);
+    el('storageBar').classList.toggle('full', pct >= 95);
+    el('storageUsage').textContent =
+      `Зайнято ${fmtGb(storage.used_gb)} / ${fmtGb(storage.max_gb)} ГБ` +
+      ` (${pct}%) · вільно ~${fmtGb(storage.free_gb)} ГБ · файлів: ${storage.count || 0}`;
+    el('storageMeta').textContent = storage.cyclic_overwrite ? 'цикл увімкнено' : 'цикл вимкнено';
+  }
+
+  async function post(url, body) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-CSRFToken': csrf,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.storage) apply(data.storage);
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  el('btnSaveStorage').onclick = async () => {
+    try {
+      el('storageError').textContent = '';
+      await post('{% url "recordings:api_storage" %}', {
+        cyclic_overwrite: el('cyclicOverwrite').checked,
+        max_gb: Number(el('maxGb').value),
+        retention_days: Number(el('retentionDays').value),
+      });
+      el('storageHint').textContent = 'Налаштування збережено. Очистка виконана за новими лімітами.';
+      // Reload list if files may have been removed
+      setTimeout(() => location.reload(), 700);
+    } catch (err) {
+      el('storageError').textContent = err.message;
+    }
+  };
+
+  el('btnApplyNow').onclick = async () => {
+    try {
+      el('storageError').textContent = '';
+      await post('{% url "recordings:api_purge" %}', {});
+      el('storageHint').textContent = 'Очистку виконано.';
+      setTimeout(() => location.reload(), 700);
+    } catch (err) {
+      el('storageError').textContent = err.message;
+    }
+  };
+
+  apply(storage);
+})();
+</script>
 {% endblock %}

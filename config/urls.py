@@ -14,6 +14,7 @@ urlpatterns = [
     path('camera/', include('app_viewer.camera_urls')),
     path('motion/', include('app_motion.urls')),
     path('recordings/', include('app_recordings.urls')),
+    path('integration/', include('app_integration.urls')),
 ]
 
 if settings.DEBUG:

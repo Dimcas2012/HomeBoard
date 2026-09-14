@@ -124,12 +124,16 @@
     if (sensLabel && ms.sensitivity != null) sensLabel.textContent = String(ms.sensitivity);
     if (cdLabel && ms.cooldown_sec != null) cdLabel.textContent = String(ms.cooldown_sec);
     renderCtrlSectors(Array.isArray(ms.sectors) ? ms.sectors : null);
+    applyCtrlSchedule(ms.schedule || null, ms);
 
     document.getElementById('ctrlStatus').textContent = [
       state.streaming ? 'Streaming' : 'Idle',
       state.native ? 'Android app' : 'Browser',
       state.online === false ? 'offline' : 'online',
       ms.sensitivity != null ? `motion ${ms.sensitivity}/10` : null,
+      ms.schedule?.enabled
+        ? (ms.schedule_active ? 'розклад ✓' : 'поза розкладом')
+        : null,
     ].filter(Boolean).join(' · ');
 
     drawer.querySelectorAll('button[data-act="torch"], input[data-act="torch"]').forEach((n) => {
@@ -144,6 +148,87 @@
     const gridEl = document.getElementById('ctrlSectorGrid');
     if (!gridEl) return Array(12).fill(true);
     return [...gridEl.querySelectorAll('button')].map((b) => b.classList.contains('on'));
+  }
+
+  const DAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+
+  function fillCtrlHourSelects() {
+    const start = drawer.querySelector('select[data-act="motion_start_hour"]');
+    const end = drawer.querySelector('select[data-act="motion_end_hour"]');
+    if (start && !start.options.length) {
+      for (let h = 0; h <= 23; h++) {
+        const o = document.createElement('option');
+        o.value = String(h);
+        o.textContent = `${String(h).padStart(2, '0')}:00`;
+        start.appendChild(o);
+      }
+    }
+    if (end && !end.options.length) {
+      for (let h = 0; h <= 24; h++) {
+        const o = document.createElement('option');
+        o.value = String(h);
+        o.textContent = h === 24 ? '24:00' : `${String(h).padStart(2, '0')}:00`;
+        end.appendChild(o);
+      }
+    }
+  }
+
+  function currentCtrlDays() {
+    const box = document.getElementById('ctrlMotionDays');
+    if (!box) return Array(7).fill(true);
+    return [...box.querySelectorAll('button')].map((b) => b.classList.contains('on'));
+  }
+
+  function sendCtrlSchedule(partial = {}) {
+    if (!selectedCameraId) return;
+    const enabledInput = drawer.querySelector('input[data-act="motion_schedule_enabled"]');
+    const start = drawer.querySelector('select[data-act="motion_start_hour"]');
+    const end = drawer.querySelector('select[data-act="motion_end_hour"]');
+    sendControl(selectedCameraId, 'motion_schedule', {
+      enabled: enabledInput ? enabledInput.checked : false,
+      days: currentCtrlDays(),
+      start_hour: Number(start?.value || 0),
+      end_hour: Number(end?.value || 24),
+      ...partial,
+    });
+  }
+
+  function applyCtrlSchedule(schedule, ms = {}) {
+    fillCtrlHourSelects();
+    const enabledInput = drawer.querySelector('input[data-act="motion_schedule_enabled"]');
+    const start = drawer.querySelector('select[data-act="motion_start_hour"]');
+    const end = drawer.querySelector('select[data-act="motion_end_hour"]');
+    const hint = document.getElementById('ctrlScheduleHint');
+    const sch = schedule || { enabled: false, days: Array(7).fill(true), start_hour: 0, end_hour: 24 };
+    if (enabledInput) enabledInput.checked = !!sch.enabled;
+    if (start && sch.start_hour != null) start.value = String(sch.start_hour);
+    if (end && sch.end_hour != null) end.value = String(sch.end_hour);
+    const box = document.getElementById('ctrlMotionDays');
+    if (box) {
+      const days = Array.isArray(sch.days) ? sch.days.slice(0, 7) : Array(7).fill(true);
+      while (days.length < 7) days.push(true);
+      box.innerHTML = '';
+      days.forEach((on, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = DAY_LABELS[idx];
+        btn.classList.toggle('on', !!on);
+        btn.disabled = !sch.enabled;
+        btn.addEventListener('click', () => {
+          if (!selectedCameraId || !enabledInput?.checked) return;
+          btn.classList.toggle('on');
+          sendCtrlSchedule({ days: currentCtrlDays() });
+        });
+        box.appendChild(btn);
+      });
+    }
+    if (hint) {
+      hint.textContent = sch.enabled
+        ? (ms.schedule_summary || 'розклад увімкнено')
+        : 'розклад вимкнено — фіксація завжди';
+    }
+    if (start) start.disabled = !sch.enabled;
+    if (end) end.disabled = !sch.enabled;
   }
 
   function renderCtrlSectors(sectors) {
@@ -493,7 +578,7 @@
   });
 
   drawer.addEventListener('change', (ev) => {
-    const input = ev.target.closest('input[type="range"][data-act]');
+    const input = ev.target.closest('input[data-act], select[data-act]');
     if (!input || !selectedCameraId) return;
     if (input.dataset.act === 'motion_sensitivity') {
       sendControl(selectedCameraId, 'motion_sensitivity', Number(input.value));
@@ -501,8 +586,22 @@
     if (input.dataset.act === 'motion_cooldown') {
       sendControl(selectedCameraId, 'motion_cooldown', Number(input.value));
     }
+    if (input.dataset.act === 'motion_schedule_enabled') {
+      sendCtrlSchedule({ enabled: input.checked });
+      applyCtrlSchedule({
+        enabled: input.checked,
+        days: currentCtrlDays(),
+        start_hour: Number(drawer.querySelector('select[data-act="motion_start_hour"]')?.value || 0),
+        end_hour: Number(drawer.querySelector('select[data-act="motion_end_hour"]')?.value || 24),
+      });
+    }
+    if (input.dataset.act === 'motion_start_hour' || input.dataset.act === 'motion_end_hour') {
+      sendCtrlSchedule();
+    }
   });
 
+  fillCtrlHourSelects();
+  applyCtrlSchedule({ enabled: false, days: Array(7).fill(true), start_hour: 0, end_hour: 24 });
   renderCtrlSectors(Array(12).fill(true));
 
   document.getElementById('ctrlClose')?.addEventListener('click', closeDrawer);

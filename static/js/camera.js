@@ -62,6 +62,12 @@
   let motionCooldownUntil = 0;
   let lastHotSectors = [];
   let motionSettings = null;
+  let telegramPrefs = {
+    telegram_enabled: false,
+    send_screenshot: true,
+    jpeg_quality: 0.7,
+    max_width: 1280,
+  };
   let facingMode = localStorage.getItem(FACING_KEY) || 'environment';
   let dualMode = localStorage.getItem(DUAL_KEY) === '1';
   let wantLocalLoop = localStorage.getItem(LOCAL_LOOP_KEY) === '1';
@@ -91,6 +97,38 @@
     creds = data;
   }
 
+  const MOTION_DAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+
+  function defaultSchedule() {
+    return {
+      enabled: false,
+      days: [true, true, true, true, true, true, true], // Mon..Sun
+      start_hour: 0,
+      end_hour: 24, // 24 = кінець доби; equal to start means 24/7 within selected days
+    };
+  }
+
+  function normalizeSchedule(raw) {
+    const base = defaultSchedule();
+    if (!raw || typeof raw !== 'object') return base;
+    const days = Array.isArray(raw.days)
+      ? raw.days.slice(0, 7).map(Boolean)
+      : base.days.slice();
+    while (days.length < 7) days.push(true);
+    let start = Number(raw.start_hour);
+    let end = Number(raw.end_hour);
+    if (!Number.isFinite(start)) start = 0;
+    if (!Number.isFinite(end)) end = 24;
+    start = Math.min(23, Math.max(0, Math.round(start)));
+    end = Math.min(24, Math.max(0, Math.round(end)));
+    return {
+      enabled: !!raw.enabled,
+      days,
+      start_hour: start,
+      end_hour: end,
+    };
+  }
+
   function defaultMotionSettings() {
     return {
       sensitivity: 6,
@@ -98,6 +136,7 @@
       interval_ms: 400,
       sectors: Array(MOTION_COLS * MOTION_ROWS).fill(true),
       show_overlay: false,
+      schedule: defaultSchedule(),
     };
   }
 
@@ -116,6 +155,7 @@
         interval_ms: Math.min(1000, Math.max(200, Number(raw.interval_ms) || base.interval_ms)),
         sectors,
         show_overlay: !!raw.show_overlay,
+        schedule: normalizeSchedule(raw.schedule),
       };
     } catch {
       return defaultMotionSettings();
@@ -131,6 +171,67 @@
     return Math.max(4, Math.round(48 - motionSettings.sensitivity * 5));
   }
 
+  function scheduleDayIndex(date = new Date()) {
+    const js = date.getDay(); // 0=Sun
+    return js === 0 ? 6 : js - 1; // Mon=0..Sun=6
+  }
+
+  function isMotionScheduleActive(date = new Date()) {
+    const sch = motionSettings?.schedule;
+    if (!sch || !sch.enabled) return true;
+    const dayIdx = scheduleDayIndex(date);
+    if (!sch.days[dayIdx]) return false;
+    const h = date.getHours();
+    const start = Number(sch.start_hour) || 0;
+    let end = Number(sch.end_hour);
+    if (!Number.isFinite(end)) end = 24;
+    if (start === end) return true;
+    if (start < end) return h >= start && h < end;
+    // overnight, e.g. 22 → 6
+    return h >= start || h < end;
+  }
+
+  function scheduleSummary(sch = motionSettings?.schedule) {
+    if (!sch || !sch.enabled) return 'розклад вимкнено (завжди)';
+    const days = sch.days
+      .map((on, i) => (on ? MOTION_DAY_LABELS[i] : null))
+      .filter(Boolean)
+      .join(' ');
+    const endLabel = sch.end_hour === 24 ? '24:00' : `${String(sch.end_hour).padStart(2, '0')}:00`;
+    const startLabel = `${String(sch.start_hour).padStart(2, '0')}:00`;
+    return `${days || 'немає днів'} · ${startLabel}–${endLabel}`;
+  }
+
+  function fillHourSelect(selectEl, include24 = false) {
+    if (!selectEl || selectEl.options.length) return;
+    const max = include24 ? 24 : 23;
+    for (let h = 0; h <= max; h++) {
+      const opt = document.createElement('option');
+      opt.value = String(h);
+      opt.textContent = h === 24 ? '24:00' : `${String(h).padStart(2, '0')}:00`;
+      selectEl.appendChild(opt);
+    }
+  }
+
+  function renderMotionDays() {
+    const box = document.getElementById('motionDays');
+    if (!box || !motionSettings?.schedule) return;
+    box.innerHTML = '';
+    motionSettings.schedule.days.forEach((on, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = MOTION_DAY_LABELS[idx];
+      btn.classList.toggle('on', !!on);
+      btn.addEventListener('click', () => {
+        motionSettings.schedule.days[idx] = !motionSettings.schedule.days[idx];
+        saveMotionSettings();
+        applyMotionSettingsToUi();
+        emitState();
+      });
+      box.appendChild(btn);
+    });
+  }
+
   function applyMotionSettingsToUi() {
     if (!motionSettings) return;
     if (motionSensEl) motionSensEl.value = String(motionSettings.sensitivity);
@@ -143,6 +244,24 @@
     if (sensLabel) sensLabel.textContent = String(motionSettings.sensitivity);
     if (cdLabel) cdLabel.textContent = String(motionSettings.cooldown_sec);
     if (ivLabel) ivLabel.textContent = String(motionSettings.interval_ms);
+
+    const sch = motionSettings.schedule || defaultSchedule();
+    const schEnabled = document.getElementById('motionScheduleEnabled');
+    const schBlock = document.getElementById('motionScheduleBlock');
+    const startEl = document.getElementById('motionStartHour');
+    const endEl = document.getElementById('motionEndHour');
+    const hint = document.getElementById('motionScheduleHint');
+    fillHourSelect(startEl, false);
+    fillHourSelect(endEl, true);
+    if (schEnabled) schEnabled.checked = !!sch.enabled;
+    if (schBlock) schBlock.hidden = !sch.enabled;
+    if (startEl) startEl.value = String(sch.start_hour);
+    if (endEl) endEl.value = String(sch.end_hour);
+    if (hint) {
+      const active = isMotionScheduleActive();
+      hint.textContent = `${scheduleSummary(sch)} · зараз: ${active ? 'фіксація активна' : 'поза розкладом'}`;
+    }
+    renderMotionDays();
     renderSectorGrid();
     renderMotionOverlay();
   }
@@ -181,7 +300,10 @@
     });
   }
 
-  function setMotionSettings( partial = {}) {
+  function setMotionSettings(partial = {}) {
+    const nextSchedule = partial.schedule != null
+      ? normalizeSchedule({ ...(motionSettings?.schedule || {}), ...partial.schedule })
+      : normalizeSchedule(motionSettings?.schedule);
     motionSettings = {
       ...defaultMotionSettings(),
       ...motionSettings,
@@ -189,6 +311,7 @@
       sectors: Array.isArray(partial.sectors)
         ? partial.sectors.slice(0, MOTION_COLS * MOTION_ROWS).map(Boolean)
         : (motionSettings?.sectors || defaultMotionSettings().sectors).slice(),
+      schedule: nextSchedule,
     };
     while (motionSettings.sectors.length < MOTION_COLS * MOTION_ROWS) {
       motionSettings.sectors.push(true);
@@ -834,6 +957,14 @@
         interval_ms: motionSettings.interval_ms,
         sectors: motionSettings.sectors.slice(),
         threshold: motionThreshold(),
+        schedule: {
+          enabled: !!motionSettings.schedule?.enabled,
+          days: (motionSettings.schedule?.days || defaultSchedule().days).slice(),
+          start_hour: motionSettings.schedule?.start_hour ?? 0,
+          end_hour: motionSettings.schedule?.end_hour ?? 24,
+        },
+        schedule_active: isMotionScheduleActive(),
+        schedule_summary: scheduleSummary(),
       },
       torch,
       eco,
@@ -917,6 +1048,34 @@
           error = 'Невірні сектори';
         } else {
           setMotionSettings({ sectors: value });
+        }
+      } else if (action === 'motion_schedule') {
+        if (!value || typeof value !== 'object') {
+          ok = false;
+          error = 'Невірний розклад';
+        } else {
+          setMotionSettings({ schedule: value });
+        }
+      } else if (action === 'motion_schedule_enabled') {
+        setMotionSettings({
+          schedule: { ...(motionSettings.schedule || defaultSchedule()), enabled: !!value },
+        });
+      } else if (action === 'motion_start_hour') {
+        setMotionSettings({
+          schedule: { ...(motionSettings.schedule || defaultSchedule()), start_hour: Number(value) },
+        });
+      } else if (action === 'motion_end_hour') {
+        setMotionSettings({
+          schedule: { ...(motionSettings.schedule || defaultSchedule()), end_hour: Number(value) },
+        });
+      } else if (action === 'motion_days') {
+        if (!Array.isArray(value)) {
+          ok = false;
+          error = 'Невірні дні';
+        } else {
+          setMotionSettings({
+            schedule: { ...(motionSettings.schedule || defaultSchedule()), days: value },
+          });
         }
       } else if (action === 'start') {
         const btn = document.getElementById('btnStart');
@@ -1035,6 +1194,13 @@
 
     motionTimer = setInterval(() => {
       if (!document.getElementById('motionEnabled')?.checked) return;
+      if (!isMotionScheduleActive()) {
+        if (motionLiveScoreEl) {
+          motionLiveScoreEl.textContent = `Поза розкладом — фіксація вимкнена (${scheduleSummary()})`;
+        }
+        lastFrame = null;
+        return;
+      }
       const src = dualMode ? composeCanvas : localVideo;
       const ready = dualMode ? composeCanvas.width : localVideo.videoWidth;
       if (!ready) return;
@@ -1104,11 +1270,52 @@
     lastFrame = null;
   }
 
+  async function refreshTelegramPrefs() {
+    if (!creds?.camera_id || !creds?.device_token) return;
+    try {
+      const res = await fetch('/integration/api/device/prefs/', {
+        headers: {
+          'X-Camera-Id': creds.camera_id,
+          'X-Device-Token': creds.device_token,
+        },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      telegramPrefs = {
+        telegram_enabled: !!data.telegram_enabled,
+        send_screenshot: data.send_screenshot !== false,
+        jpeg_quality: Math.min(0.95, Math.max(0.2, Number(data.jpeg_quality) || 0.7)),
+        max_width: Number(data.max_width) || 1280,
+      };
+    } catch (_) { /* ignore */ }
+  }
+
+  function captureMotionSnapshot() {
+    const src = dualMode ? composeCanvas : localVideo;
+    const sw = dualMode ? (composeCanvas.width || 0) : (localVideo.videoWidth || 0);
+    const sh = dualMode ? (composeCanvas.height || 0) : (localVideo.videoHeight || 0);
+    if (!sw || !sh) return null;
+    const maxW = telegramPrefs.max_width || 1280;
+    const scale = Math.min(1, maxW / sw);
+    const w = Math.max(1, Math.round(sw * scale));
+    const h = Math.max(1, Math.round(sh * scale));
+    const snap = document.createElement('canvas');
+    snap.width = w;
+    snap.height = h;
+    const ctx = snap.getContext('2d');
+    ctx.drawImage(src, 0, 0, w, h);
+    return snap;
+  }
+
   async function onMotion(canvas, meta = {}) {
     const hot = Array.isArray(meta.hot) ? meta.hot.map((n) => Number(n)).filter((n) => n >= 0) : [];
     const hotLabel = hot.map((n) => n + 1).join(',') || '—';
     setStatus(`Motion! s${(meta.score || 0).toFixed(0)} [${hotLabel}]`);
-    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.7));
+    const snap = captureMotionSnapshot() || canvas;
+    const quality = telegramPrefs.jpeg_quality || 0.7;
+    const blob = telegramPrefs.send_screenshot === false
+      ? null
+      : await new Promise((r) => snap.toBlob(r, 'image/jpeg', quality));
     const fd = new FormData();
     fd.append(
       'note',
@@ -1250,6 +1457,12 @@
       interval_ms: Number(motionIntervalEl?.value || motionSettings.interval_ms),
       show_overlay: !!motionShowOverlayEl?.checked,
       sectors: motionSettings.sectors.slice(),
+      schedule: {
+        enabled: !!document.getElementById('motionScheduleEnabled')?.checked,
+        days: (motionSettings.schedule?.days || defaultSchedule().days).slice(),
+        start_hour: Number(document.getElementById('motionStartHour')?.value || 0),
+        end_hour: Number(document.getElementById('motionEndHour')?.value || 24),
+      },
     });
     emitState();
   }
@@ -1275,6 +1488,9 @@
   });
   motionIntervalEl?.addEventListener('change', syncMotionFromInputs);
   motionShowOverlayEl?.addEventListener('change', syncMotionFromInputs);
+  document.getElementById('motionScheduleEnabled')?.addEventListener('change', syncMotionFromInputs);
+  document.getElementById('motionStartHour')?.addEventListener('change', syncMotionFromInputs);
+  document.getElementById('motionEndHour')?.addEventListener('change', syncMotionFromInputs);
   document.getElementById('btnSectorsAll')?.addEventListener('click', () => {
     setMotionSettings({ sectors: Array(MOTION_COLS * MOTION_ROWS).fill(true) });
     emitState();
@@ -1317,6 +1533,7 @@
       document.getElementById('btnStart').disabled = true;
       document.getElementById('btnStop').disabled = false;
       await syncLocalLoop();
+      await refreshTelegramPrefs();
       emitState();
     } catch (err) {
       console.error(err);
@@ -1356,6 +1573,7 @@
     updateFacingUi();
     setStatus('Готово до стріму');
     ensureLoopRecorder()?.refreshUsage();
+    refreshTelegramPrefs();
     maybeAutostart();
   }
 

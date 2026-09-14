@@ -436,6 +436,38 @@ a:hover { text-decoration: underline; }
 .motion-sector-grid button.hot {
   box-shadow: inset 0 0 0 2px #f59e0b;
 }
+.motion-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  width: 100%;
+}
+.motion-days button {
+  min-width: 2.4rem;
+  padding: .4rem .45rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #1a2333;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: .8rem;
+}
+.motion-days button.on {
+  background: rgba(56, 189, 185, .22);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.motion-schedule {
+  margin-top: .35rem;
+  padding: .75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0c121b;
+}
+.ctrl-days {
+  margin: .45rem 0 .25rem;
+}
 .ctrl-motion {
   display: grid;
   gap: .45rem;
@@ -494,6 +526,48 @@ a:hover { text-decoration: underline; }
   border-top: 1px solid var(--line);
   background: var(--bg-elev);
 }
+.integ-card {
+  margin-top: 1rem;
+  padding: 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #0f1520;
+  max-width: 720px;
+}
+.integ-status {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+.integ-input {
+  width: 100%;
+  background: #0d131c;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 10px;
+  padding: .65rem .75rem;
+  font: inherit;
+}
+a.btn.disabled {
+  opacity: .45;
+  pointer-events: none;
+}
+.integ-cam-list {
+  display: grid;
+  gap: .45rem;
+  margin: .35rem 0 1rem;
+}
+.integ-cam-item {
+  margin: 0 !important;
+}
+.settings-page {
+  padding: 1.25rem 1.5rem 2rem;
+}
+.settings-page h2 {
+  margin: 0 0 .35rem;
+}
 .row { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
 .mono { font-family: var(--mono); letter-spacing: .08em; }
 .status-pill {
@@ -528,6 +602,21 @@ a:hover { text-decoration: underline; }
   align-items: center;
 }
 .recordings-page { padding: 1.25rem; max-width: 1100px; margin: 0 auto; }
+.storage-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: #1a2333;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.storage-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width .25s ease;
+}
+.storage-bar-fill.warn { background: #f59e0b; }
+.storage-bar-fill.full { background: var(--danger); }
 .rec-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
