@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="hb_bg">#0B0F14</color>
+    <color name="hb_panel">#161D28</color>
+    <color name="hb_line">#243041</color>
+    <color name="hb_text">#E8EEF7</color>
+    <color name="hb_muted">#8B9BB0</color>
+    <color name="hb_accent">#3DD6C6</color>
+    <color name="hb_accent_dark">#06231F</color>
+    <color name="hb_warn">#FFB020</color>
+</resources>

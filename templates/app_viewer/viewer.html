@@ -21,9 +21,16 @@
         <div class="placeholder">
           {% if cam.is_online and cam.source_type == 'browser' %}Підключення…{% elif cam.source_type == 'rtsp' %}IP / MediaMTX{% else %}Офлайн{% endif %}
         </div>
+        <div class="tile-controls" data-controls-for="{{ cam.id }}">
+          <button type="button" data-act="panel" title="Налаштування">⚙</button>
+          <button type="button" data-act="flip" title="Перемкнути камеру">⇄</button>
+          <button type="button" data-act="torch" title="Ліхтарик">🔦</button>
+          <button type="button" data-act="eco" title="Економ-режим">☾</button>
+          <button type="button" data-act="fs" title="На весь екран">⛶</button>
+        </div>
         <div class="tile-meta">
           <span><span class="dot {% if cam.is_online %}on{% endif %}"></span>{{ cam.name }}</span>
-          <span class="muted">{{ cam.get_source_type_display }}</span>
+          <span class="muted cam-state">{{ cam.get_source_type_display }}</span>
         </div>
       </div>
     {% empty %}
@@ -33,6 +40,33 @@
     {% endfor %}
   </main>
   <div id="toasts" class="toast-wrap"></div>
+  <div id="ctrlBackdrop" class="ctrl-backdrop" hidden></div>
+  <aside id="ctrlDrawer" class="ctrl-drawer" aria-hidden="true">
+    <h3 id="ctrlTitle">Керування камерою</h3>
+    <p class="muted" id="ctrlSubtitle">Оберіть камеру</p>
+    <div class="ctrl-row">
+      <button class="btn" type="button" data-act="start">Старт</button>
+      <button class="btn secondary" type="button" data-act="stop">Стоп</button>
+      <button class="btn secondary" type="button" data-act="flip">⇄ Камера</button>
+    </div>
+    <label class="ctrl-check"><input type="checkbox" data-act="dual"> Обидві камери</label>
+    <label class="ctrl-check"><input type="checkbox" data-act="motion" checked> Motion</label>
+    <label class="ctrl-check"><input type="checkbox" data-act="record_motion" checked> Запис при русі</label>
+    <label class="ctrl-check"><input type="checkbox" data-act="torch"> Ліхтарик</label>
+    <label class="ctrl-check"><input type="checkbox" data-act="eco"> Економ-режим (екран)</label>
+    <div class="ctrl-row" style="margin-top:1rem">
+      <label class="muted">Facing</label>
+      <select data-act="facing">
+        <option value="environment">Задня</option>
+        <option value="user">Фронтальна</option>
+      </select>
+    </div>
+    <div class="ctrl-row">
+      <button class="btn secondary" type="button" data-act="refresh_state">Оновити стан</button>
+      <button class="btn secondary" type="button" id="ctrlClose">Закрити</button>
+    </div>
+    <p class="muted" id="ctrlStatus" style="margin-top:1rem;font-size:.85rem"></p>
+  </aside>
 </div>
 {% endblock %}
 {% block scripts %}

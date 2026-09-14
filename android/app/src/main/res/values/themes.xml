@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.HomeBoard" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/hb_accent</item>
+        <item name="colorOnPrimary">@color/hb_accent_dark</item>
+        <item name="android:statusBarColor">@color/hb_bg</item>
+        <item name="android:navigationBarColor">@color/hb_bg</item>
+        <item name="android:windowBackground">@color/hb_bg</item>
+        <item name="android:colorBackground">@color/hb_bg</item>
+    </style>
+</resources>

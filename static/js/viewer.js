@@ -2,8 +2,13 @@
   const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
   const grid = document.getElementById('camera-grid');
   const toasts = document.getElementById('toasts');
-  const peers = new Map(); // cameraId -> { pc, watchTimer }
+  const drawer = document.getElementById('ctrlDrawer');
+  const backdrop = document.getElementById('ctrlBackdrop');
+  const peers = new Map();
+  const cameraState = new Map();
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  let selectedCameraId = null;
+  let ws;
 
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -46,6 +51,104 @@
     if (text != null) ph.textContent = text;
   }
 
+  function sendControl(cameraId, action, value) {
+    if (!cameraId || !ws || ws.readyState !== WebSocket.OPEN) {
+      toast('Немає звʼязку з сервером');
+      return;
+    }
+    ws.send(JSON.stringify({
+      type: 'control',
+      camera_id: cameraId,
+      action,
+      value: value === undefined ? null : value,
+    }));
+  }
+
+  function openDrawer(cameraId) {
+    selectedCameraId = cameraId;
+    const el = tile(cameraId);
+    const name = el?.querySelector('.tile-meta span')?.textContent?.replace(/^./, '').trim()
+      || cameraId;
+    document.getElementById('ctrlTitle').textContent = name;
+    document.getElementById('ctrlSubtitle').textContent = `ID: ${cameraId.slice(0, 8)}…`;
+    drawer.classList.add('open');
+    drawer.setAttribute('aria-hidden', 'false');
+    backdrop.hidden = false;
+    backdrop.classList.add('show');
+    applyStateToDrawer(cameraState.get(cameraId));
+    sendControl(cameraId, 'get_state');
+  }
+
+  function closeDrawer() {
+    drawer.classList.remove('open');
+    drawer.setAttribute('aria-hidden', 'true');
+    backdrop.hidden = true;
+    backdrop.classList.remove('show');
+  }
+
+  function applyStateToDrawer(state) {
+    if (!state) {
+      document.getElementById('ctrlStatus').textContent = 'Очікування стану камери…';
+      return;
+    }
+    const setCheck = (act, val) => {
+      const input = drawer.querySelector(`input[data-act="${act}"]`);
+      if (input) input.checked = !!val;
+    };
+    setCheck('dual', state.dual);
+    setCheck('motion', state.motion);
+    setCheck('record_motion', state.record_motion);
+    setCheck('torch', state.torch);
+    setCheck('eco', state.eco);
+    const facing = drawer.querySelector('select[data-act="facing"]');
+    if (facing && state.facing) facing.value = state.facing;
+    document.getElementById('ctrlStatus').textContent = [
+      state.streaming ? 'Streaming' : 'Idle',
+      state.native ? 'Android app' : 'Browser',
+      state.online === false ? 'offline' : 'online',
+    ].filter(Boolean).join(' · ');
+
+    drawer.querySelectorAll('button[data-act="torch"], input[data-act="torch"]').forEach((n) => {
+      n.disabled = state.torch_available === false;
+    });
+    drawer.querySelectorAll('button[data-act="eco"], input[data-act="eco"]').forEach((n) => {
+      n.disabled = state.eco_available === false;
+    });
+  }
+
+  function updateTileState(cameraId, state) {
+    cameraState.set(cameraId, state);
+    const el = tile(cameraId);
+    if (!el) return;
+    const label = el.querySelector('.cam-state');
+    if (label) {
+      const bits = [];
+      if (state.streaming) bits.push('live');
+      if (state.torch) bits.push('🔦');
+      if (state.eco) bits.push('eco');
+      if (state.dual) bits.push('dual');
+      label.textContent = bits.join(' · ') || el.dataset.source || 'browser';
+    }
+    el.querySelectorAll('.tile-controls button[data-act="torch"]').forEach((b) => {
+      b.classList.toggle('on', !!state.torch);
+      b.disabled = state.torch_available === false;
+    });
+    el.querySelectorAll('.tile-controls button[data-act="eco"]').forEach((b) => {
+      b.classList.toggle('on', !!state.eco);
+    });
+    if (selectedCameraId === cameraId) applyStateToDrawer(state);
+  }
+
+  function controlsHtml(id) {
+    return `<div class="tile-controls" data-controls-for="${id}">
+      <button type="button" data-act="panel" title="Налаштування">⚙</button>
+      <button type="button" data-act="flip" title="Перемкнути камеру">⇄</button>
+      <button type="button" data-act="torch" title="Ліхтарик">🔦</button>
+      <button type="button" data-act="eco" title="Економ-режим">☾</button>
+      <button type="button" data-act="fs" title="На весь екран">⛶</button>
+    </div>`;
+  }
+
   function ensureTile(cam) {
     let el = tile(cam.id || cam.camera_id);
     if (el) return el;
@@ -58,9 +161,10 @@
     el.innerHTML = `
       <video autoplay playsinline muted></video>
       <div class="placeholder">Офлайн</div>
+      ${controlsHtml(id)}
       <div class="tile-meta">
         <span><span class="dot"></span>${cam.name || 'Camera'}</span>
-        <span class="muted">${cam.source_type || 'browser'}</span>
+        <span class="muted cam-state">${cam.source_type || 'browser'}</span>
       </div>`;
     grid.querySelector('.empty')?.remove();
     grid.appendChild(el);
@@ -135,7 +239,6 @@
       if (!t) return;
       if (state === 'failed' || state === 'disconnected') {
         setPlaceholder(t, 'Зʼєднання втрачено', false);
-        // one automatic retry
         if (state === 'failed') {
           setTimeout(() => watchBrowserCamera(cameraId, { force: true }), 1500);
         }
@@ -157,18 +260,52 @@
     const watchTimer = setTimeout(() => {
       const t = tile(cameraId);
       if (t && !t.querySelector('video').srcObject) {
-        setPlaceholder(t, 'Немає відео — натисніть плитку для повтору', false);
+        setPlaceholder(t, 'Немає відео — ⚙ або клік по плитці', false);
       }
     }, 12000);
 
     peers.set(cameraId, { pc, watchTimer });
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'watch', camera_id: cameraId }));
+      sendControl(cameraId, 'get_state');
+    }
+  }
+
+  function handleTileAction(cameraId, act, el) {
+    if (act === 'panel') {
+      openDrawer(cameraId);
+      return;
+    }
+    if (act === 'fs') {
+      el.classList.toggle('fullscreen');
+      return;
+    }
+    if (el.dataset.source !== 'browser') {
+      toast('Керування доступне для browser-камер');
+      return;
+    }
+    if (act === 'flip') sendControl(cameraId, 'flip');
+    if (act === 'torch') {
+      const cur = cameraState.get(cameraId);
+      sendControl(cameraId, 'torch', !(cur && cur.torch));
+    }
+    if (act === 'eco') {
+      const cur = cameraState.get(cameraId);
+      sendControl(cameraId, 'eco', !(cur && cur.eco));
     }
   }
 
   function bindTile(el) {
-    el.addEventListener('click', () => {
+    el.querySelector('.tile-controls')?.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act]');
+      if (!btn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      handleTileAction(el.dataset.cameraId, btn.dataset.act, el);
+    });
+
+    el.addEventListener('click', (ev) => {
+      if (ev.target.closest('.tile-controls')) return;
       const video = el.querySelector('video');
       if (el.dataset.source === 'browser' && !video?.srcObject) {
         watchBrowserCamera(el.dataset.cameraId, { force: true });
@@ -180,7 +317,29 @@
 
   grid.querySelectorAll('.tile').forEach(bindTile);
 
-  let ws = new WebSocket(wsUrl());
+  drawer.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    const input = ev.target.closest('input[data-act]');
+    const select = ev.target.closest('select[data-act]');
+    if (!selectedCameraId) return;
+
+    if (btn) {
+      const act = btn.dataset.act;
+      if (act === 'start') sendControl(selectedCameraId, 'start');
+      if (act === 'stop') sendControl(selectedCameraId, 'stop');
+      if (act === 'flip') sendControl(selectedCameraId, 'flip');
+      if (act === 'refresh_state') sendControl(selectedCameraId, 'get_state');
+    }
+    if (input && input.type === 'checkbox') {
+      sendControl(selectedCameraId, input.dataset.act, input.checked);
+    }
+    if (select) {
+      sendControl(selectedCameraId, 'facing', select.value);
+    }
+  });
+
+  document.getElementById('ctrlClose')?.addEventListener('click', closeDrawer);
+  backdrop?.addEventListener('click', closeDrawer);
 
   function connectWs() {
     ws = new WebSocket(wsUrl());
@@ -263,6 +422,14 @@
       return;
     }
 
+    if (msg.type === 'camera_state' || msg.type === 'control_ack') {
+      if (msg.state) updateTileState(msg.camera_id, msg.state);
+      if (msg.type === 'control_ack' && msg.ok === false) {
+        toast(msg.error || 'Команда не виконана');
+      }
+      return;
+    }
+
     if (msg.type === 'motion') {
       beep();
       toast(`Рух: ${msg.camera_name || msg.camera_id}`);
@@ -274,7 +441,5 @@
     }
   }
 
-  ws.onopen = onOpen;
-  ws.onmessage = onMessage;
-  ws.onclose = () => setTimeout(connectWs, 2000);
+  connectWs();
 })();

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material Components (сумісно з API 23), не Material3-only features -->
+    <style name="Theme.HomeBoard" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/hb_accent</item>
+        <item name="colorOnPrimary">@color/hb_accent_dark</item>
+        <item name="colorSecondary">@color/hb_accent</item>
+        <item name="android:statusBarColor">@color/hb_bg</item>
+        <item name="android:navigationBarColor">@color/hb_bg</item>
+        <item name="android:windowBackground">@color/hb_bg</item>
+        <item name="android:colorBackground">@color/hb_bg</item>
+        <item name="colorSurface">@color/hb_panel</item>
+        <item name="colorOnSurface">@color/hb_text</item>
+    </style>
+</resources>

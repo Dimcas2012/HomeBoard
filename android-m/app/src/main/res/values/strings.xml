@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HomeBoard Camera M</string>
+    <string name="server_hint">Сервер HomeBoard</string>
+    <string name="code_hint">Код pairing</string>
+    <string name="connect">Підключити</string>
+    <string name="open_camera">Відкрити камеру</string>
+    <string name="permission_required">Потрібні доступ до камери та мікрофона</string>
+    <string name="pair_help">Версія для Android 6.0+. Створіть код у веб-кабінеті (Камери) і введіть тут.</string>
+    <string name="default_server">https://homeboard.secboard.online</string>
+</resources>

@@ -201,26 +201,58 @@
     updateFacingUi();
   }
 
+  function isAndroidApp() {
+    return /HomeBoardAndroid/i.test(navigator.userAgent || '') ||
+      new URLSearchParams(location.search).get('autostart') === '1';
+  }
+
+  function polyfillMediaDevices() {
+    if (!navigator.mediaDevices) {
+      navigator.mediaDevices = {};
+    }
+    if (!navigator.mediaDevices.getUserMedia) {
+      const legacy = navigator.getUserMedia ||
+        navigator.webkitGetUserMedia ||
+        navigator.mozGetUserMedia;
+      if (!legacy) return false;
+      navigator.mediaDevices.getUserMedia = (constraints) => new Promise((resolve, reject) => {
+        legacy.call(navigator, constraints, resolve, reject);
+      });
+    }
+    return typeof navigator.mediaDevices.getUserMedia === 'function';
+  }
+
   function assertSecure() {
+    polyfillMediaDevices();
     if (!window.isSecureContext) {
       throw new Error(
         'Потрібен HTTPS. Відкрийте https://' + location.host + '/camera/ і підтвердіть сертифікат.'
       );
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Камера недоступна в цьому браузері');
+      throw new Error(
+        'Камера недоступна в цьому WebView. Оновіть Android System WebView / Chrome, або натисніть «Старт стріму» ще раз.'
+      );
     }
   }
 
   async function openCamera(facing, { withAudio = false } = {}) {
     assertSecure();
     const mode = facing === 'user' ? 'user' : 'environment';
-    const videoConstraints = [
-      { facingMode: { exact: mode } },
-      { facingMode: { ideal: mode } },
-      { facingMode: mode },
-      true,
-    ];
+    // На Android WebView `exact` часто падає — спочатку мʼякі обмеження
+    const videoConstraints = isAndroidApp()
+      ? [
+          true,
+          { facingMode: mode },
+          { facingMode: { ideal: mode } },
+          { width: { ideal: 1280 }, height: { ideal: 720 } },
+        ]
+      : [
+          { facingMode: { ideal: mode } },
+          { facingMode: mode },
+          { facingMode: { exact: mode } },
+          true,
+        ];
     let lastErr;
     for (const video of videoConstraints) {
       for (const audio of withAudio ? [true, false] : [false]) {
@@ -484,7 +516,10 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws/signal/?role=camera&camera_id=${encodeURIComponent(creds.camera_id)}&token=${encodeURIComponent(creds.device_token)}`;
     ws = new WebSocket(url);
-    ws.onopen = () => setStatus('Online · очікування viewer');
+    ws.onopen = () => {
+      setStatus('Online · очікування viewer');
+      emitState();
+    };
     ws.onclose = () => setStatus('Відключено');
     ws.onmessage = onSignal;
   }
@@ -505,7 +540,138 @@
       if (pc && msg.candidate) {
         try { await pc.addIceCandidate(msg.candidate); } catch (_) {}
       }
+      return;
     }
+    if (msg.type === 'control' && msg.from === 'viewer') {
+      await handleControl(msg);
+    }
+  }
+
+  function nativeBridge() {
+    return window.HomeBoardNative || null;
+  }
+
+  function collectState() {
+    const native = nativeBridge();
+    let torch = false;
+    let eco = false;
+    let torchAvailable = false;
+    let ecoAvailable = false;
+    try {
+      if (native?.getCapabilities) {
+        const caps = JSON.parse(native.getCapabilities() || '{}');
+        torchAvailable = !!caps.torch;
+        ecoAvailable = !!caps.eco;
+      }
+      if (native?.isTorchOn) torch = !!native.isTorchOn();
+      if (native?.isEcoOn) eco = !!native.isEcoOn();
+    } catch (_) { /* ignore */ }
+
+    return {
+      streaming: !!(document.getElementById('btnStop') && !document.getElementById('btnStop').disabled),
+      facing: facingMode,
+      dual: dualMode,
+      motion: !!document.getElementById('motionEnabled')?.checked,
+      record_motion: !!document.getElementById('recordOnMotion')?.checked,
+      torch,
+      eco,
+      torch_available: torchAvailable || !!native?.setTorch,
+      eco_available: ecoAvailable || !!native?.setEco,
+      native: !!native,
+      online: ws?.readyState === WebSocket.OPEN,
+    };
+  }
+
+  function emitState(extra = {}) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !creds?.camera_id) return;
+    ws.send(JSON.stringify({
+      type: 'camera_state',
+      camera_id: creds.camera_id,
+      state: { ...collectState(), ...extra },
+    }));
+  }
+
+  async function handleControl(msg) {
+    const action = msg.action;
+    const value = msg.value;
+    let ok = true;
+    let error = '';
+
+    try {
+      if (action === 'get_state') {
+        emitState();
+        return;
+      }
+      if (action === 'flip') {
+        await switchCamera();
+      } else if (action === 'facing') {
+        await switchCamera(value === 'user' ? 'user' : 'environment');
+      } else if (action === 'dual') {
+        await toggleDualMode(!!value);
+        if (dualCam) dualCam.checked = dualMode;
+      } else if (action === 'motion') {
+        const el = document.getElementById('motionEnabled');
+        if (el) el.checked = !!value;
+      } else if (action === 'record_motion') {
+        const el = document.getElementById('recordOnMotion');
+        if (el) el.checked = !!value;
+      } else if (action === 'start') {
+        const btn = document.getElementById('btnStart');
+        if (btn && !btn.disabled) btn.click();
+        else if (btn?.disabled) {
+          // already started
+        } else {
+          setFacing(facingSelect?.value || facingMode);
+          setDual(dualCam?.checked);
+          await ensureMedia({ force: true });
+          wsConnect();
+          startMotion();
+          document.getElementById('btnStart').disabled = true;
+          document.getElementById('btnStop').disabled = false;
+        }
+      } else if (action === 'stop') {
+        const btn = document.getElementById('btnStop');
+        if (btn && !btn.disabled) btn.click();
+      } else if (action === 'torch') {
+        const native = nativeBridge();
+        if (!native?.setTorch) {
+          ok = false;
+          error = 'Ліхтарик доступний лише в Android-додатку';
+        } else {
+          const r = native.setTorch(!!value);
+          ok = r === true || r === 'true' || r === 1;
+          if (!ok) error = 'Не вдалося ввімкнути ліхтарик (камера зайнята?)';
+        }
+      } else if (action === 'eco') {
+        const native = nativeBridge();
+        if (!native?.setEco) {
+          ok = false;
+          error = 'Економ-режим доступний лише в Android-додатку';
+        } else {
+          const r = native.setEco(!!value);
+          ok = r === true || r === 'true' || r === 1;
+          if (!ok) error = 'Не вдалося змінити економ-режим';
+        }
+      } else {
+        ok = false;
+        error = `Невідома команда: ${action}`;
+      }
+    } catch (err) {
+      ok = false;
+      error = err.message || String(err);
+    }
+
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'control_ack',
+        camera_id: creds.camera_id,
+        action,
+        ok,
+        error,
+        state: collectState(),
+      }));
+    }
+    emitState();
   }
 
   async function createOfferForViewer(viewerChannel) {
@@ -738,6 +904,7 @@
       document.getElementById('btnStart').disabled = true;
       document.getElementById('btnStop').disabled = false;
       await syncLocalLoop();
+      emitState();
     } catch (err) {
       console.error(err);
       setStatus('Помилка камери');
@@ -757,6 +924,7 @@
     document.getElementById('btnStop').disabled = true;
     setStatus('Зупинено');
     await ensureLoopRecorder()?.refreshUsage();
+    emitState();
   };
 
   document.getElementById('btnReset').onclick = () => {
@@ -775,10 +943,26 @@
     updateFacingUi();
     setStatus('Готово до стріму');
     ensureLoopRecorder()?.refreshUsage();
+    maybeAutostart();
+  }
+
+  let autostartTried = false;
+  function maybeAutostart() {
+    if (autostartTried || !isAndroidApp()) return;
+    if (!creds?.camera_id) return;
+    const btn = document.getElementById('btnStart');
+    if (!btn || btn.disabled) return;
+    autostartTried = true;
+    setStatus('Автостарт камери…');
+    // Невелика затримка: WebView встигає видати PermissionRequest
+    setTimeout(() => {
+      try { btn.click(); } catch (e) { console.error(e); }
+    }, 400);
   }
 
   applyMirror();
   updateFacingUi();
+  polyfillMediaDevices();
   creds = loadCreds();
   if (creds?.camera_id && creds?.device_token) showLive();
   else ensureLoopRecorder()?.refreshUsage();
@@ -786,6 +970,9 @@
   const hint = document.getElementById('secure-hint');
   if (hint && !window.isSecureContext) {
     hint.hidden = false;
-    hint.innerHTML = 'Для камери на iPhone потрібен HTTPS: відкрийте <strong>https://' + location.host + '/camera/</strong> і дозвольте сертифікат.';
+    hint.innerHTML = 'Для камери потрібен HTTPS: відкрийте <strong>https://' + location.host + '/camera/</strong> і дозвольте сертифікат.';
+  } else if (hint && isAndroidApp()) {
+    hint.hidden = false;
+    hint.textContent = 'Android-додаток: дозвольте камеру/мікрофон у системному вікні, далі стрім стартує автоматично.';
   }
 })();
