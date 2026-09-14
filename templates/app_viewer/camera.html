@@ -64,6 +64,12 @@
     </div>
   </section>
 </div>
-<script src="/static/js/local_store.js"></script>
-<script src="/static/js/camera.js"></script>
+<script>
+  window.HOMEBOARD = {
+    iceServers: {{ webrtc_ice_servers_json|safe }},
+  };
+</script>
+<script src="/static/js/local_store.js?v={{ static_bust }}"></script>
+<script src="/static/js/webrtc_common.js?v={{ static_bust }}"></script>
+<script src="/static/js/camera.js?v={{ static_bust }}"></script>
 {% endblock %}

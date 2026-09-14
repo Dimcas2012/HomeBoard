@@ -1,11 +1,16 @@
 (() => {
-  const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+  const ICE = window.HomeBoardWebRTC?.iceConfig?.() || {
+    iceServers: window.HOMEBOARD?.iceServers || [
+      { urls: 'stun:stun.l.google.com:19302' },
+    ],
+  };
   const grid = document.getElementById('camera-grid');
   const toasts = document.getElementById('toasts');
   const drawer = document.getElementById('ctrlDrawer');
   const backdrop = document.getElementById('ctrlBackdrop');
   const peers = new Map();
   const cameraState = new Map();
+  const watchTimers = new Map();
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   let selectedCameraId = null;
   let ws;
@@ -209,13 +214,25 @@
     peers.delete(cameraId);
   }
 
+  function scheduleWatch(cameraId, { force = false } = {}) {
+    if (watchTimers.has(cameraId)) clearTimeout(watchTimers.get(cameraId));
+    watchTimers.set(cameraId, setTimeout(() => {
+      watchTimers.delete(cameraId);
+      watchBrowserCamera(cameraId, { force });
+    }, 400));
+  }
+
   async function watchBrowserCamera(cameraId, { force = false } = {}) {
-    if (!force && peers.has(cameraId)) return;
+    const existing = peers.get(cameraId);
+    if (!force && existing?.pc && ['connected', 'connecting'].includes(existing.pc.connectionState)) {
+      return;
+    }
     closePeer(cameraId);
 
     const el = tile(cameraId);
     if (el) setPlaceholder(el, 'Підключення…', false);
 
+    const session = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const pc = new RTCPeerConnection(ICE);
 
     pc.ontrack = (ev) => {
@@ -236,15 +253,22 @@
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
       const t = tile(cameraId);
-      if (!t) return;
+      if (!t || t.querySelector('video')?.srcObject) return;
       if (state === 'failed' || state === 'disconnected') {
         setPlaceholder(t, 'Зʼєднання втрачено', false);
         if (state === 'failed') {
-          setTimeout(() => watchBrowserCamera(cameraId, { force: true }), 1500);
+          setTimeout(() => scheduleWatch(cameraId, { force: true }), 2000);
         }
-      } else if (state === 'connecting') {
-        setPlaceholder(t, 'Підключення…', false);
       }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      const t = tile(cameraId);
+      if (!t || t.querySelector('video')?.srcObject) return;
+      const state = pc.iceConnectionState;
+      if (state === 'checking') setPlaceholder(t, 'ICE…', false);
+      if (state === 'connected' || state === 'completed') setPlaceholder(t, null, true);
+      if (state === 'failed') setPlaceholder(t, 'ICE failed — клік для повтору', false);
     };
 
     pc.onicecandidate = (ev) => {
@@ -260,14 +284,20 @@
     const watchTimer = setTimeout(() => {
       const t = tile(cameraId);
       if (t && !t.querySelector('video').srcObject) {
-        setPlaceholder(t, 'Немає відео — ⚙ або клік по плитці', false);
+        const ice = pc.iceConnectionState;
+        setPlaceholder(
+          t,
+          ice === 'failed'
+            ? 'ICE failed — клік для повтору'
+            : `Немає відео (${ice || 'no-offer'}) — клік для повтору`,
+          false,
+        );
       }
-    }, 12000);
+    }, 15000);
 
-    peers.set(cameraId, { pc, watchTimer });
+    peers.set(cameraId, { pc, watchTimer, session });
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'watch', camera_id: cameraId }));
-      sendControl(cameraId, 'get_state');
+      ws.send(JSON.stringify({ type: 'watch', camera_id: cameraId, session }));
     }
   }
 
@@ -308,7 +338,7 @@
       if (ev.target.closest('.tile-controls')) return;
       const video = el.querySelector('video');
       if (el.dataset.source === 'browser' && !video?.srcObject) {
-        watchBrowserCamera(el.dataset.cameraId, { force: true });
+        scheduleWatch(el.dataset.cameraId, { force: true });
         return;
       }
       el.classList.toggle('fullscreen');
@@ -349,11 +379,9 @@
   }
 
   function onOpen() {
+    // camera_list arrives right after connect and drives watches — avoid double watch race.
     grid.querySelectorAll('.tile').forEach((el) => {
       if (el.dataset.source === 'rtsp') playWhep(el);
-      else if (el.dataset.source === 'browser' && el.querySelector('.dot.on')) {
-        watchBrowserCamera(el.dataset.cameraId, { force: true });
-      }
     });
   }
 
@@ -365,7 +393,7 @@
         const el = ensureTile(cam);
         el.querySelector('.dot').classList.toggle('on', !!cam.is_online);
         if (cam.source_type === 'rtsp') playWhep(el);
-        else if (cam.is_online) watchBrowserCamera(cam.id, { force: true });
+        else if (cam.is_online) scheduleWatch(cam.id, { force: true });
         else {
           setPlaceholder(el, 'Офлайн', false);
           closePeer(cam.id);
@@ -378,7 +406,7 @@
       const el = ensureTile(msg);
       el.querySelector('.dot').classList.add('on');
       setPlaceholder(el, 'Підключення…', false);
-      watchBrowserCamera(msg.camera_id, { force: true });
+      scheduleWatch(msg.camera_id, { force: true });
       return;
     }
 
@@ -391,6 +419,24 @@
         v.srcObject = null;
       }
       closePeer(msg.camera_id);
+      return;
+    }
+
+    if (msg.type === 'camera_unreachable') {
+      const el = tile(msg.camera_id);
+      if (el) {
+        el.querySelector('.dot')?.classList.remove('on');
+        setPlaceholder(el, msg.reason || 'Камера не в мережі', false);
+        const v = el.querySelector('video');
+        if (v) v.srcObject = null;
+      }
+      closePeer(msg.camera_id);
+      return;
+    }
+
+    if (msg.type === 'offer_error' && msg.from === 'camera') {
+      const el = tile(msg.camera_id);
+      if (el) setPlaceholder(el, msg.error || 'Помилка камери', false);
       return;
     }
 

@@ -49,7 +49,7 @@ INSTALLED_APPS = [
     'config',
     'app_accounts',
     'app_cameras',
-    'app_streaming',
+    'app_streaming.apps.AppStreamingConfig',
     'app_viewer',
     'app_motion',
     'app_recordings',
@@ -152,6 +152,37 @@ LOGOUT_REDIRECT_URL = 'accounts:login'
 MEDIAMTX_WEBRTC_URL = os.getenv('MEDIAMTX_WEBRTC_URL', 'http://127.0.0.1:8889')
 RECORDING_RETENTION_DAYS = int(os.getenv('RECORDING_RETENTION_DAYS', '14'))
 RECORDING_MAX_GB = float(os.getenv('RECORDING_MAX_GB', '10'))
+
+# Optional TURN for WebRTC when phone/PC are on different NATs (comma-separated URLs).
+# Example: turn:turn.example.com:3478,turns:turn.example.com:5349
+_turn_urls = [u.strip() for u in os.getenv('TURN_URLS', '').split(',') if u.strip()]
+_turn_user = os.getenv('TURN_USERNAME', '')
+_turn_pass = os.getenv('TURN_CREDENTIAL', '')
+WEBRTC_ICE_SERVERS = [
+    {'urls': 'stun:stun.l.google.com:19302'},
+    {'urls': 'stun:stun1.l.google.com:19302'},
+]
+if _turn_urls:
+    turn_entry = {'urls': _turn_urls}
+    if _turn_user:
+        turn_entry['username'] = _turn_user
+        turn_entry['credential'] = _turn_pass
+    WEBRTC_ICE_SERVERS.append(turn_entry)
+else:
+    # Public Open Relay TURN — Chromium often fails LAN P2P (mDNS host candidates).
+    # Override with TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL for production.
+    WEBRTC_ICE_SERVERS.extend([
+        {'urls': 'stun:openrelay.metered.ca:80'},
+        {
+            'urls': [
+                'turn:openrelay.metered.ca:80',
+                'turn:openrelay.metered.ca:443',
+                'turn:openrelay.metered.ca:443?transport=tcp',
+            ],
+            'username': 'openrelayproject',
+            'credential': 'openrelayproject',
+        },
+    ])
 
 MAILERS = {
     'default': {

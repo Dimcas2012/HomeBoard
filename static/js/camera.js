@@ -1,5 +1,9 @@
 (() => {
-  const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+  const ICE = window.HomeBoardWebRTC?.iceConfig?.() || {
+    iceServers: window.HOMEBOARD?.iceServers || [
+      { urls: 'stun:stun.l.google.com:19302' },
+    ],
+  };
   const STORAGE_KEY = 'homeboard_camera';
   const FACING_KEY = 'homeboard_facing';
   const DUAL_KEY = 'homeboard_dual';
@@ -780,7 +784,30 @@
   }
 
   async function createOfferForViewer(viewerChannel) {
-    await ensureMedia();
+    try {
+      await ensureMedia();
+    } catch (err) {
+      console.error(err);
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'offer_error',
+          error: err.message || 'Не вдалося відкрити камеру',
+          viewer_channel: viewerChannel,
+        }));
+      }
+      setStatus('Помилка камери');
+      return;
+    }
+    if (!localStream || !localStream.getVideoTracks().length) {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'offer_error',
+          error: 'Немає відео-доріжки — натисніть Старт',
+          viewer_channel: viewerChannel,
+        }));
+      }
+      return;
+    }
     if (peers.has(viewerChannel)) {
       peers.get(viewerChannel).close();
       peers.delete(viewerChannel);

@@ -1,9 +1,23 @@
 import json
+from pathlib import Path
 
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.conf import settings
 
 from app_cameras.models import Camera
+from app_streaming import presence
+
+_SIGNAL_LOG = Path(settings.BASE_DIR) / 'logs' / 'signal.log'
+
+
+def _signal_log(line: str) -> None:
+    try:
+        _SIGNAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_SIGNAL_LOG, 'a', encoding='utf-8') as fh:
+            fh.write(line)
+    except OSError:
+        pass
 
 
 class SignalingConsumer(AsyncWebsocketConsumer):
@@ -16,7 +30,6 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         self.user = self.scope.get('user')
-        self.role = self.scope['query_string'].decode().split('role=')[-1].split('&')[0] if b'role=' in self.scope['query_string'] else ''
         query = dict(
             part.split('=', 1)
             for part in self.scope['query_string'].decode().split('&')
@@ -49,6 +62,7 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             self.camera_group = f'camera_{camera["id"]}'
             self.owner_group = f'owner_{camera["owner_id"]}'
             await self.channel_layer.group_add(self.camera_group, self.channel_name)
+            presence.mark_live(camera['id'])
             await self._mark_online(camera['id'], True)
             await self.accept()
             await self.channel_layer.group_send(
@@ -68,6 +82,7 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         if self.role == 'camera' and self.camera:
+            presence.mark_dead(self.camera['id'])
             await self._mark_online(self.camera['id'], False)
             if self.owner_group:
                 await self.channel_layer.group_send(
@@ -102,7 +117,23 @@ class SignalingConsumer(AsyncWebsocketConsumer):
             allowed = await self._owns_camera(self.user.id, camera_id)
             if not allowed:
                 return
-            # watch / offer / answer / ice / hangup → camera group
+
+            # Stale DB "online" after Daphne restart: no live WS in this process.
+            # Only gate new sessions; never drop mid-flight ICE/answer.
+            if msg_type in ('watch', 'control') and not presence.is_live(camera_id):
+                _signal_log(f'viewer {msg_type} blocked cam={camera_id} not live\n')
+                await self.send(text_data=json.dumps({
+                    'type': 'camera_unreachable',
+                    'camera_id': camera_id,
+                    'reason': 'Камера не в мережі (перезапустіть стрім на телефоні)',
+                }))
+                return
+
+            if msg_type in ('watch', 'answer', 'ice', 'control'):
+                _signal_log(
+                    f'viewer→cam {msg_type} cam={camera_id} live={presence.is_live(camera_id)}\n'
+                )
+
             await self.channel_layer.group_send(
                 f'camera_{camera_id}',
                 {
@@ -115,6 +146,10 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         if self.role == 'camera' and self.camera:
             target = data.get('viewer_channel')
             payload = {**data, 'from': 'camera', 'camera_id': self.camera['id']}
+            if msg_type in ('offer', 'answer', 'ice', 'offer_error', 'camera_state'):
+                _signal_log(
+                    f'cam→viewer {msg_type} cam={self.camera["id"]} target={bool(target)}\n'
+                )
             if target:
                 await self.channel_layer.send(
                     target,
@@ -155,12 +190,18 @@ class SignalingConsumer(AsyncWebsocketConsumer):
     @sync_to_async
     def _list_cameras(self, owner_id):
         qs = Camera.objects.filter(owner_id=owner_id)
+        live = presence.live_ids()
         return [
             {
                 'id': str(c.id),
                 'name': c.name,
                 'source_type': c.source_type,
-                'is_online': c.is_online,
+                # Prefer live WS presence over possibly-stale DB flag.
+                'is_online': (
+                    str(c.id) in live
+                    if c.source_type == Camera.SourceType.BROWSER
+                    else c.is_online
+                ),
                 'webrtc_play_url': c.webrtc_play_url,
             }
             for c in qs
