@@ -113,10 +113,23 @@
     setCheck('eco', state.eco);
     const facing = drawer.querySelector('select[data-act="facing"]');
     if (facing && state.facing) facing.value = state.facing;
+
+    const ms = state.motion_settings || {};
+    const sens = drawer.querySelector('input[data-act="motion_sensitivity"]');
+    const cd = drawer.querySelector('input[data-act="motion_cooldown"]');
+    if (sens && ms.sensitivity != null) sens.value = String(ms.sensitivity);
+    if (cd && ms.cooldown_sec != null) cd.value = String(ms.cooldown_sec);
+    const sensLabel = document.getElementById('ctrlSensLabel');
+    const cdLabel = document.getElementById('ctrlCdLabel');
+    if (sensLabel && ms.sensitivity != null) sensLabel.textContent = String(ms.sensitivity);
+    if (cdLabel && ms.cooldown_sec != null) cdLabel.textContent = String(ms.cooldown_sec);
+    renderCtrlSectors(Array.isArray(ms.sectors) ? ms.sectors : null);
+
     document.getElementById('ctrlStatus').textContent = [
       state.streaming ? 'Streaming' : 'Idle',
       state.native ? 'Android app' : 'Browser',
       state.online === false ? 'offline' : 'online',
+      ms.sensitivity != null ? `motion ${ms.sensitivity}/10` : null,
     ].filter(Boolean).join(' · ');
 
     drawer.querySelectorAll('button[data-act="torch"], input[data-act="torch"]').forEach((n) => {
@@ -124,6 +137,34 @@
     });
     drawer.querySelectorAll('button[data-act="eco"], input[data-act="eco"]').forEach((n) => {
       n.disabled = state.eco_available === false;
+    });
+  }
+
+  function currentCtrlSectors() {
+    const gridEl = document.getElementById('ctrlSectorGrid');
+    if (!gridEl) return Array(12).fill(true);
+    return [...gridEl.querySelectorAll('button')].map((b) => b.classList.contains('on'));
+  }
+
+  function renderCtrlSectors(sectors) {
+    const gridEl = document.getElementById('ctrlSectorGrid');
+    if (!gridEl) return;
+    const list = Array.isArray(sectors) && sectors.length
+      ? sectors.slice(0, 12)
+      : Array(12).fill(true);
+    while (list.length < 12) list.push(true);
+    gridEl.innerHTML = '';
+    list.forEach((on, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = String(idx + 1);
+      btn.classList.toggle('on', !!on);
+      btn.addEventListener('click', () => {
+        if (!selectedCameraId) return;
+        btn.classList.toggle('on');
+        sendControl(selectedCameraId, 'motion_sectors', currentCtrlSectors());
+      });
+      gridEl.appendChild(btn);
     });
   }
 
@@ -160,9 +201,61 @@
     </div>`;
   }
 
+  function ensureSectorUi(el) {
+    if (!el) return null;
+    let gridEl = el.querySelector('.tile-sectors');
+    if (!gridEl) {
+      gridEl = document.createElement('div');
+      gridEl.className = 'tile-sectors';
+      gridEl.setAttribute('aria-hidden', 'true');
+      el.insertBefore(gridEl, el.querySelector('.tile-controls') || el.querySelector('.tile-meta'));
+    }
+    if (!gridEl.children.length) {
+      for (let i = 0; i < 12; i++) {
+        const cell = document.createElement('span');
+        cell.dataset.sector = String(i);
+        cell.textContent = String(i + 1);
+        gridEl.appendChild(cell);
+      }
+    }
+    let label = el.querySelector('.tile-sectors-label');
+    if (!label) {
+      label = document.createElement('div');
+      label.className = 'tile-sectors-label';
+      label.hidden = true;
+      gridEl.after(label);
+    }
+    return { gridEl, label };
+  }
+
+  function showMotionSectors(el, sectors, meta = {}) {
+    const ui = ensureSectorUi(el);
+    if (!ui) return;
+    const hot = new Set((sectors || []).map((n) => Number(n)).filter((n) => n >= 0 && n < 12));
+    ui.gridEl.classList.add('show');
+    [...ui.gridEl.children].forEach((cell, idx) => {
+      cell.classList.toggle('hot', hot.has(idx));
+    });
+    const nums = [...hot].sort((a, b) => a - b).map((n) => n + 1);
+    const scoreBit = meta.score != null ? ` · ${Number(meta.score).toFixed(0)}` : '';
+    ui.label.hidden = false;
+    ui.label.textContent = nums.length
+      ? `Сектори: ${nums.join(', ')}${scoreBit}`
+      : `Рух${scoreBit}`;
+    clearTimeout(el._motionSectorTimer);
+    el._motionSectorTimer = setTimeout(() => {
+      ui.gridEl.classList.remove('show');
+      [...ui.gridEl.children].forEach((cell) => cell.classList.remove('hot'));
+      ui.label.hidden = true;
+    }, 6000);
+  }
+
   function ensureTile(cam) {
     let el = tile(cam.id || cam.camera_id);
-    if (el) return el;
+    if (el) {
+      ensureSectorUi(el);
+      return el;
+    }
     const id = cam.id || cam.camera_id;
     el = document.createElement('div');
     el.className = 'tile';
@@ -172,6 +265,8 @@
     el.innerHTML = `
       <video autoplay playsinline muted></video>
       <div class="placeholder">Офлайн</div>
+      <div class="tile-sectors" aria-hidden="true"></div>
+      <div class="tile-sectors-label" hidden></div>
       ${controlsHtml(id)}
       <div class="tile-meta">
         <span><span class="dot"></span>${cam.name || 'Camera'}</span>
@@ -179,6 +274,7 @@
       </div>`;
     grid.querySelector('.empty')?.remove();
     grid.appendChild(el);
+    ensureSectorUi(el);
     bindTile(el);
     return el;
   }
@@ -351,7 +447,10 @@
     });
   }
 
-  grid.querySelectorAll('.tile').forEach(bindTile);
+  grid.querySelectorAll('.tile').forEach((el) => {
+    ensureSectorUi(el);
+    bindTile(el);
+  });
 
   drawer.addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-act]');
@@ -365,6 +464,14 @@
       if (act === 'stop') sendControl(selectedCameraId, 'stop');
       if (act === 'flip') sendControl(selectedCameraId, 'flip');
       if (act === 'refresh_state') sendControl(selectedCameraId, 'get_state');
+      if (act === 'sectors_all') {
+        sendControl(selectedCameraId, 'motion_sectors', Array(12).fill(true));
+        renderCtrlSectors(Array(12).fill(true));
+      }
+      if (act === 'sectors_none') {
+        sendControl(selectedCameraId, 'motion_sectors', Array(12).fill(false));
+        renderCtrlSectors(Array(12).fill(false));
+      }
     }
     if (input && input.type === 'checkbox') {
       sendControl(selectedCameraId, input.dataset.act, input.checked);
@@ -373,6 +480,30 @@
       sendControl(selectedCameraId, 'facing', select.value);
     }
   });
+
+  drawer.addEventListener('input', (ev) => {
+    const input = ev.target.closest('input[type="range"][data-act]');
+    if (!input || !selectedCameraId) return;
+    if (input.dataset.act === 'motion_sensitivity') {
+      document.getElementById('ctrlSensLabel').textContent = input.value;
+    }
+    if (input.dataset.act === 'motion_cooldown') {
+      document.getElementById('ctrlCdLabel').textContent = input.value;
+    }
+  });
+
+  drawer.addEventListener('change', (ev) => {
+    const input = ev.target.closest('input[type="range"][data-act]');
+    if (!input || !selectedCameraId) return;
+    if (input.dataset.act === 'motion_sensitivity') {
+      sendControl(selectedCameraId, 'motion_sensitivity', Number(input.value));
+    }
+    if (input.dataset.act === 'motion_cooldown') {
+      sendControl(selectedCameraId, 'motion_cooldown', Number(input.value));
+    }
+  });
+
+  renderCtrlSectors(Array(12).fill(true));
 
   document.getElementById('ctrlClose')?.addEventListener('click', closeDrawer);
   backdrop?.addEventListener('click', closeDrawer);
@@ -484,11 +615,19 @@
 
     if (msg.type === 'motion') {
       beep();
-      toast(`Рух: ${msg.camera_name || msg.camera_id}`);
+      const sectors = Array.isArray(msg.sectors) ? msg.sectors : [];
+      const nums = sectors.map((n) => Number(n) + 1).filter((n) => n >= 1);
+      toast(
+        nums.length
+          ? `Рух: ${msg.camera_name || msg.camera_id} · сектори ${nums.join(', ')}`
+          : `Рух: ${msg.camera_name || msg.camera_id}`,
+      );
       const el = tile(msg.camera_id);
       if (el) {
         el.classList.add('motion');
-        setTimeout(() => el.classList.remove('motion'), 4000);
+        showMotionSectors(el, sectors, { score: msg.score, threshold: msg.threshold });
+        clearTimeout(el._motionOutlineTimer);
+        el._motionOutlineTimer = setTimeout(() => el.classList.remove('motion'), 6000);
       }
     }
   }

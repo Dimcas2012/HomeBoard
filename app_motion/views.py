@@ -31,14 +31,44 @@ def report_motion(request):
         return JsonResponse({'error': 'unauthorized'}, status=401)
 
     note = ''
+    score = None
+    threshold = None
+    sectors = []
     if request.content_type and 'application/json' in request.content_type:
         try:
             payload = json.loads(request.body.decode('utf-8') or '{}')
             note = payload.get('note', '')
+            score = payload.get('score')
+            threshold = payload.get('threshold')
+            sectors = payload.get('sectors') or []
         except json.JSONDecodeError:
             note = ''
     else:
         note = request.POST.get('note', '')
+        score = request.POST.get('score')
+        threshold = request.POST.get('threshold')
+        raw_sectors = request.POST.get('sectors', '')
+        if raw_sectors:
+            try:
+                sectors = json.loads(raw_sectors)
+            except json.JSONDecodeError:
+                sectors = []
+
+    if not isinstance(sectors, list):
+        sectors = []
+    try:
+        sectors = [int(s) for s in sectors if str(s).strip() != '']
+    except (TypeError, ValueError):
+        sectors = []
+
+    try:
+        score_f = float(score) if score is not None and score != '' else None
+    except (TypeError, ValueError):
+        score_f = None
+    try:
+        thr_f = float(threshold) if threshold is not None and threshold != '' else None
+    except (TypeError, ValueError):
+        thr_f = None
 
     event = MotionEvent.objects.create(camera=camera, note=note)
     if request.FILES.get('thumbnail'):
@@ -56,10 +86,13 @@ def report_motion(request):
                 'camera_name': camera.name,
                 'event_id': event.id,
                 'detected_at': event.detected_at.isoformat(),
+                'sectors': sectors,
+                'score': score_f,
+                'threshold': thr_f,
             },
         },
     )
-    return JsonResponse({'ok': True, 'event_id': event.id})
+    return JsonResponse({'ok': True, 'event_id': event.id, 'sectors': sectors})
 
 
 @require_GET

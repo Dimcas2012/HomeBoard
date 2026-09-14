@@ -9,6 +9,11 @@
   const DUAL_KEY = 'homeboard_dual';
   const LOCAL_LOOP_KEY = 'homeboard_local_loop';
   const LOCAL_MAX_KEY = 'homeboard_local_max_mb';
+  const MOTION_KEY = 'homeboard_motion';
+  const MOTION_COLS = 4;
+  const MOTION_ROWS = 3;
+  const MOTION_W = 64;
+  const MOTION_H = 36;
 
   const statusEl = document.getElementById('status');
   const pairForm = document.getElementById('pair-form');
@@ -32,6 +37,16 @@
   const localPlayer = document.getElementById('localPlayer');
   const btnLocalList = document.getElementById('btnLocalList');
   const btnLocalClear = document.getElementById('btnLocalClear');
+  const motionPanel = document.getElementById('motionPanel');
+  const motionSectorGrid = document.getElementById('motionSectorGrid');
+  const motionOverlay = document.getElementById('motionOverlay');
+  const motionSensEl = document.getElementById('motionSensitivity');
+  const motionCdEl = document.getElementById('motionCooldown');
+  const motionIntervalEl = document.getElementById('motionInterval');
+  const motionShowOverlayEl = document.getElementById('motionShowOverlay');
+  const motionLiveScoreEl = document.getElementById('motionLiveScore');
+  const btnMotionSettings = document.getElementById('btnMotionSettings');
+  const btnMotionClose = document.getElementById('btnMotionClose');
 
   let creds = null;
   let localStream = null; // outbound stream (single cam or canvas+audio)
@@ -45,6 +60,8 @@
   let recordedChunks = [];
   let lastMotionEventId = null;
   let motionCooldownUntil = 0;
+  let lastHotSectors = [];
+  let motionSettings = null;
   let facingMode = localStorage.getItem(FACING_KEY) || 'environment';
   let dualMode = localStorage.getItem(DUAL_KEY) === '1';
   let wantLocalLoop = localStorage.getItem(LOCAL_LOOP_KEY) === '1';
@@ -73,6 +90,118 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     creds = data;
   }
+
+  function defaultMotionSettings() {
+    return {
+      sensitivity: 6,
+      cooldown_sec: 8,
+      interval_ms: 400,
+      sectors: Array(MOTION_COLS * MOTION_ROWS).fill(true),
+      show_overlay: false,
+    };
+  }
+
+  function loadMotionSettings() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(MOTION_KEY) || 'null');
+      const base = defaultMotionSettings();
+      if (!raw || typeof raw !== 'object') return base;
+      const sectors = Array.isArray(raw.sectors)
+        ? raw.sectors.slice(0, MOTION_COLS * MOTION_ROWS).map(Boolean)
+        : base.sectors.slice();
+      while (sectors.length < MOTION_COLS * MOTION_ROWS) sectors.push(true);
+      return {
+        sensitivity: Math.min(10, Math.max(1, Number(raw.sensitivity) || base.sensitivity)),
+        cooldown_sec: Math.min(60, Math.max(3, Number(raw.cooldown_sec) || base.cooldown_sec)),
+        interval_ms: Math.min(1000, Math.max(200, Number(raw.interval_ms) || base.interval_ms)),
+        sectors,
+        show_overlay: !!raw.show_overlay,
+      };
+    } catch {
+      return defaultMotionSettings();
+    }
+  }
+
+  function saveMotionSettings() {
+    localStorage.setItem(MOTION_KEY, JSON.stringify(motionSettings));
+  }
+
+  function motionThreshold() {
+    // sensitivity 1 → ~43, 6 → ~18, 10 → ~4 (matches old default at ~6)
+    return Math.max(4, Math.round(48 - motionSettings.sensitivity * 5));
+  }
+
+  function applyMotionSettingsToUi() {
+    if (!motionSettings) return;
+    if (motionSensEl) motionSensEl.value = String(motionSettings.sensitivity);
+    if (motionCdEl) motionCdEl.value = String(motionSettings.cooldown_sec);
+    if (motionIntervalEl) motionIntervalEl.value = String(motionSettings.interval_ms);
+    if (motionShowOverlayEl) motionShowOverlayEl.checked = !!motionSettings.show_overlay;
+    const sensLabel = document.getElementById('motionSensLabel');
+    const cdLabel = document.getElementById('motionCdLabel');
+    const ivLabel = document.getElementById('motionIntervalLabel');
+    if (sensLabel) sensLabel.textContent = String(motionSettings.sensitivity);
+    if (cdLabel) cdLabel.textContent = String(motionSettings.cooldown_sec);
+    if (ivLabel) ivLabel.textContent = String(motionSettings.interval_ms);
+    renderSectorGrid();
+    renderMotionOverlay();
+  }
+
+  function renderSectorGrid() {
+    if (!motionSectorGrid || !motionSettings) return;
+    motionSectorGrid.innerHTML = '';
+    motionSettings.sectors.forEach((on, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = String(idx + 1);
+      btn.classList.toggle('on', !!on);
+      btn.classList.toggle('hot', lastHotSectors.includes(idx));
+      btn.title = on ? 'Сектор увімкнено' : 'Сектор вимкнено';
+      btn.addEventListener('click', () => {
+        motionSettings.sectors[idx] = !motionSettings.sectors[idx];
+        saveMotionSettings();
+        applyMotionSettingsToUi();
+        emitState();
+      });
+      motionSectorGrid.appendChild(btn);
+    });
+  }
+
+  function renderMotionOverlay() {
+    if (!motionOverlay || !motionSettings) return;
+    const show = !!motionSettings.show_overlay;
+    motionOverlay.hidden = !show;
+    if (!show) return;
+    motionOverlay.innerHTML = '';
+    motionSettings.sectors.forEach((on, idx) => {
+      const cell = document.createElement('span');
+      cell.classList.toggle('off', !on);
+      cell.classList.toggle('hot', lastHotSectors.includes(idx));
+      motionOverlay.appendChild(cell);
+    });
+  }
+
+  function setMotionSettings( partial = {}) {
+    motionSettings = {
+      ...defaultMotionSettings(),
+      ...motionSettings,
+      ...partial,
+      sectors: Array.isArray(partial.sectors)
+        ? partial.sectors.slice(0, MOTION_COLS * MOTION_ROWS).map(Boolean)
+        : (motionSettings?.sectors || defaultMotionSettings().sectors).slice(),
+    };
+    while (motionSettings.sectors.length < MOTION_COLS * MOTION_ROWS) {
+      motionSettings.sectors.push(true);
+    }
+    motionSettings.sensitivity = Math.min(10, Math.max(1, Number(motionSettings.sensitivity) || 6));
+    motionSettings.cooldown_sec = Math.min(60, Math.max(3, Number(motionSettings.cooldown_sec) || 8));
+    motionSettings.interval_ms = Math.min(1000, Math.max(200, Number(motionSettings.interval_ms) || 400));
+    saveMotionSettings();
+    applyMotionSettingsToUi();
+    if (motionTimer) startMotion();
+  }
+
+  motionSettings = loadMotionSettings();
 
   function updateFacingUi() {
     if (facingLabel) facingLabel.textContent = dualMode ? 'Головна' : 'Камера';
@@ -699,6 +828,13 @@
       dual: dualMode,
       motion: !!document.getElementById('motionEnabled')?.checked,
       record_motion: !!document.getElementById('recordOnMotion')?.checked,
+      motion_settings: {
+        sensitivity: motionSettings.sensitivity,
+        cooldown_sec: motionSettings.cooldown_sec,
+        interval_ms: motionSettings.interval_ms,
+        sectors: motionSettings.sectors.slice(),
+        threshold: motionThreshold(),
+      },
       torch,
       eco,
       torch_available: torchAvailable || !!native?.setTorch,
@@ -762,6 +898,26 @@
       } else if (action === 'record_motion') {
         const el = document.getElementById('recordOnMotion');
         if (el) el.checked = !!value;
+      } else if (action === 'motion_settings') {
+        if (!value || typeof value !== 'object') {
+          ok = false;
+          error = 'Немає налаштувань Motion';
+        } else {
+          setMotionSettings(value);
+        }
+      } else if (action === 'motion_sensitivity') {
+        setMotionSettings({ sensitivity: Number(value) });
+      } else if (action === 'motion_cooldown') {
+        setMotionSettings({ cooldown_sec: Number(value) });
+      } else if (action === 'motion_interval') {
+        setMotionSettings({ interval_ms: Number(value) });
+      } else if (action === 'motion_sectors') {
+        if (!Array.isArray(value)) {
+          ok = false;
+          error = 'Невірні сектори';
+        } else {
+          setMotionSettings({ sectors: value });
+        }
       } else if (action === 'start') {
         const btn = document.getElementById('btnStart');
         if (btn && !btn.disabled) btn.click();
@@ -870,30 +1026,76 @@
 
   function startMotion() {
     stopMotion();
+    if (!motionSettings) motionSettings = loadMotionSettings();
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const cellW = MOTION_W / MOTION_COLS;
+    const cellH = MOTION_H / MOTION_ROWS;
+    const interval = motionSettings.interval_ms || 400;
+
     motionTimer = setInterval(() => {
-      if (!document.getElementById('motionEnabled').checked) return;
+      if (!document.getElementById('motionEnabled')?.checked) return;
       const src = dualMode ? composeCanvas : localVideo;
       const ready = dualMode ? composeCanvas.width : localVideo.videoWidth;
       if (!ready) return;
-      canvas.width = 64;
-      canvas.height = 36;
-      ctx.drawImage(src, 0, 0, 64, 36);
-      const frame = ctx.getImageData(0, 0, 64, 36).data;
+      canvas.width = MOTION_W;
+      canvas.height = MOTION_H;
+      ctx.drawImage(src, 0, 0, MOTION_W, MOTION_H);
+      const frame = ctx.getImageData(0, 0, MOTION_W, MOTION_H).data;
       if (lastFrame) {
+        const sectorDiff = new Array(MOTION_COLS * MOTION_ROWS).fill(0);
+        const sectorCount = new Array(MOTION_COLS * MOTION_ROWS).fill(0);
         let diff = 0;
-        for (let i = 0; i < frame.length; i += 4) {
-          diff += Math.abs(frame[i] - lastFrame[i]);
+        let samples = 0;
+        for (let y = 0; y < MOTION_H; y++) {
+          for (let x = 0; x < MOTION_W; x++) {
+            const sector = Math.floor(x / cellW) + Math.floor(y / cellH) * MOTION_COLS;
+            if (!motionSettings.sectors[sector]) continue;
+            const i = (y * MOTION_W + x) * 4;
+            const d = Math.abs(frame[i] - lastFrame[i]);
+            diff += d;
+            samples += 1;
+            sectorDiff[sector] += d;
+            sectorCount[sector] += 1;
+          }
         }
-        const score = diff / (frame.length / 4);
-        if (score > 18 && Date.now() > motionCooldownUntil) {
-          motionCooldownUntil = Date.now() + 8000;
-          onMotion(canvas);
+        const score = samples ? diff / samples : 0;
+        const thr = motionThreshold();
+        const hot = [];
+        for (let s = 0; s < sectorDiff.length; s++) {
+          if (!motionSettings.sectors[s] || !sectorCount[s]) continue;
+          if (sectorDiff[s] / sectorCount[s] > thr) hot.push(s);
+        }
+        lastHotSectors = hot;
+        if (motionLiveScoreEl) {
+          motionLiveScoreEl.textContent =
+            `Score: ${score.toFixed(1)} / поріг ${thr} · сектори: ${hot.map((n) => n + 1).join(',') || '—'}`;
+        }
+        if (motionSettings.show_overlay) renderMotionOverlay();
+        else if (motionSectorGrid && !motionPanel?.hidden) renderSectorGrid();
+
+        if (score > thr && Date.now() > motionCooldownUntil) {
+          motionCooldownUntil = Date.now() + motionSettings.cooldown_sec * 1000;
+          let hotSectors = hot.slice();
+          if (!hotSectors.length) {
+            // Diffuse motion: take top sectors by score
+            hotSectors = sectorDiff
+              .map((d, s) => ({
+                s,
+                v: sectorCount[s] ? d / sectorCount[s] : 0,
+                on: !!motionSettings.sectors[s],
+              }))
+              .filter((x) => x.on && x.v > 0)
+              .sort((a, b) => b.v - a.v)
+              .slice(0, 3)
+              .map((x) => x.s);
+          }
+          lastHotSectors = hotSectors;
+          onMotion(canvas, { score, thr, hot: hotSectors });
         }
       }
       lastFrame = frame;
-    }, 400);
+    }, interval);
   }
 
   function stopMotion() {
@@ -902,11 +1104,19 @@
     lastFrame = null;
   }
 
-  async function onMotion(canvas) {
-    setStatus('Motion!');
+  async function onMotion(canvas, meta = {}) {
+    const hot = Array.isArray(meta.hot) ? meta.hot.map((n) => Number(n)).filter((n) => n >= 0) : [];
+    const hotLabel = hot.map((n) => n + 1).join(',') || '—';
+    setStatus(`Motion! s${(meta.score || 0).toFixed(0)} [${hotLabel}]`);
     const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.7));
     const fd = new FormData();
-    fd.append('note', 'auto');
+    fd.append(
+      'note',
+      `auto score=${(meta.score || 0).toFixed(1)} thr=${meta.thr || motionThreshold()} sectors=${hotLabel}`,
+    );
+    fd.append('score', String(meta.score || 0));
+    fd.append('threshold', String(meta.thr || motionThreshold()));
+    fd.append('sectors', JSON.stringify(hot));
     if (blob) fd.append('thumbnail', blob, 'motion.jpg');
     const res = await fetch('/motion/api/report/', {
       method: 'POST',
@@ -1032,6 +1242,48 @@
       await loopRecorder.refreshUsage();
     }
   });
+
+  function syncMotionFromInputs() {
+    setMotionSettings({
+      sensitivity: Number(motionSensEl?.value || motionSettings.sensitivity),
+      cooldown_sec: Number(motionCdEl?.value || motionSettings.cooldown_sec),
+      interval_ms: Number(motionIntervalEl?.value || motionSettings.interval_ms),
+      show_overlay: !!motionShowOverlayEl?.checked,
+      sectors: motionSettings.sectors.slice(),
+    });
+    emitState();
+  }
+
+  btnMotionSettings?.addEventListener('click', () => {
+    if (!motionPanel) return;
+    motionPanel.hidden = !motionPanel.hidden;
+    if (!motionPanel.hidden) applyMotionSettingsToUi();
+  });
+  btnMotionClose?.addEventListener('click', () => {
+    if (motionPanel) motionPanel.hidden = true;
+  });
+  motionSensEl?.addEventListener('input', () => {
+    document.getElementById('motionSensLabel').textContent = motionSensEl.value;
+  });
+  motionSensEl?.addEventListener('change', syncMotionFromInputs);
+  motionCdEl?.addEventListener('input', () => {
+    document.getElementById('motionCdLabel').textContent = motionCdEl.value;
+  });
+  motionCdEl?.addEventListener('change', syncMotionFromInputs);
+  motionIntervalEl?.addEventListener('input', () => {
+    document.getElementById('motionIntervalLabel').textContent = motionIntervalEl.value;
+  });
+  motionIntervalEl?.addEventListener('change', syncMotionFromInputs);
+  motionShowOverlayEl?.addEventListener('change', syncMotionFromInputs);
+  document.getElementById('btnSectorsAll')?.addEventListener('click', () => {
+    setMotionSettings({ sectors: Array(MOTION_COLS * MOTION_ROWS).fill(true) });
+    emitState();
+  });
+  document.getElementById('btnSectorsNone')?.addEventListener('click', () => {
+    setMotionSettings({ sectors: Array(MOTION_COLS * MOTION_ROWS).fill(false) });
+    emitState();
+  });
+  applyMotionSettingsToUi();
 
   btnLocalList?.addEventListener('click', async () => {
     if (!localPanel) return;

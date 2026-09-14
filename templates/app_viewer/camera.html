@@ -10,6 +10,7 @@
     <video id="localVideo" autoplay playsinline muted></video>
     <video id="pipVideo" autoplay playsinline muted hidden></video>
     <canvas id="composeCanvas" hidden></canvas>
+    <div id="motionOverlay" class="motion-overlay" hidden></div>
   </div>
   <section class="panel">
     <div id="secure-hint" class="muted" style="margin-bottom:.75rem" hidden></div>
@@ -34,6 +35,7 @@
       <button class="btn secondary" id="btnReset" type="button">Інший код</button>
       <label class="status-pill"><input type="checkbox" id="motionEnabled" checked> Motion</label>
       <label class="status-pill"><input type="checkbox" id="recordOnMotion" checked> Запис при русі</label>
+      <button class="btn secondary" id="btnMotionSettings" type="button">Motion ⚙</button>
       <label class="status-pill"><input type="checkbox" id="localLoop"> Локальний цикл</label>
       <label class="status-pill facing-pick">
         Ліміт
@@ -51,6 +53,40 @@
     <p class="muted" id="dualHint" style="margin:.65rem 0 0;font-size:.85rem" hidden>
       Обидві камери зводяться в один стрім (велика + PiP). Не всі телефони дозволяють дві камери одночасно.
     </p>
+    <div id="motionPanel" class="motion-panel" hidden>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.75rem">
+        <strong>Налаштування Motion</strong>
+        <button class="btn secondary" id="btnMotionClose" type="button">Закрити</button>
+      </div>
+      <label class="motion-field">
+        <span>Рівень реагування <strong id="motionSensLabel">6</strong>/10</span>
+        <input type="range" id="motionSensitivity" min="1" max="10" step="1" value="6">
+        <span class="muted motion-hint">1 — слабко (менше хибних), 10 — дуже чутливо</span>
+      </label>
+      <label class="motion-field">
+        <span>Пауза між спрацюваннями <strong id="motionCdLabel">8</strong> с</span>
+        <input type="range" id="motionCooldown" min="3" max="60" step="1" value="8">
+      </label>
+      <label class="motion-field">
+        <span>Інтервал аналізу <strong id="motionIntervalLabel">400</strong> мс</span>
+        <input type="range" id="motionInterval" min="200" max="1000" step="50" value="400">
+      </label>
+      <div class="motion-field">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <span>Сектори зони (увімкнено — реагує)</span>
+          <span class="row" style="gap:.35rem">
+            <button class="btn secondary" id="btnSectorsAll" type="button">Усі</button>
+            <button class="btn secondary" id="btnSectorsNone" type="button">Жодного</button>
+          </span>
+        </div>
+        <div id="motionSectorGrid" class="motion-sector-grid" aria-label="Сектори motion"></div>
+        <span class="muted motion-hint">Натисніть сектор, щоб вимкнути рух біля країв / дверей тощо.</span>
+      </div>
+      <label class="status-pill" style="margin-top:.5rem">
+        <input type="checkbox" id="motionShowOverlay"> Показати сітку на превʼю
+      </label>
+      <p class="muted" id="motionLiveScore" style="margin:.5rem 0 0;font-size:.85rem">Score: —</p>
+    </div>
     <p class="muted" id="localHint" style="margin:.65rem 0 0;font-size:.85rem" hidden>
       Безперервний запис у памʼять браузера сегментами ~20 с. При досягненні ліміту найстаріші сегменти видаляються (цикл перезапису).
     </p>
