@@ -236,28 +236,103 @@
     }
   }
 
-  async function openCamera(facing, { withAudio = false } = {}) {
+  let videoInputsCache = null;
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function inferFacingFromLabel(label) {
+    const s = String(label || '').toLowerCase();
+    if (/front|user|face|selfie|перед|фронт|facing\s*front/.test(s)) return 'user';
+    if (/back|rear|environment|world|задн|основ|facing\s*back|facing\s*rear|facing\s*environment/.test(s)) {
+      return 'environment';
+    }
+    return null;
+  }
+
+  async function getVideoInputs({ refresh = false } = {}) {
+    if (!refresh && videoInputsCache?.length) return videoInputsCache;
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    let videos = devices.filter((d) => d.kind === 'videoinput');
+    // Labels often empty until a camera was granted once
+    if (videos.length && !videos.some((d) => d.label)) {
+      try {
+        const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stopStream(tmp);
+        await sleep(isAndroidApp() ? 300 : 80);
+        devices = await navigator.mediaDevices.enumerateDevices();
+        videos = devices.filter((d) => d.kind === 'videoinput');
+      } catch (_) { /* ignore */ }
+    }
+    videoInputsCache = videos;
+    return videos;
+  }
+
+  function trackFacing(track) {
+    try {
+      const settings = track?.getSettings?.() || {};
+      if (settings.facingMode === 'user' || settings.facingMode === 'environment') {
+        return settings.facingMode;
+      }
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  async function openCamera(facing, { withAudio = false, excludeDeviceIds = [] } = {}) {
     assertSecure();
     const mode = facing === 'user' ? 'user' : 'environment';
-    // На Android WebView `exact` часто падає — спочатку мʼякі обмеження
-    const videoConstraints = isAndroidApp()
-      ? [
-          true,
-          { facingMode: mode },
-          { facingMode: { ideal: mode } },
-          { width: { ideal: 1280 }, height: { ideal: 720 } },
-        ]
-      : [
-          { facingMode: { ideal: mode } },
-          { facingMode: mode },
-          { facingMode: { exact: mode } },
-          true,
-        ];
+    const exclude = new Set((excludeDeviceIds || []).filter(Boolean));
+    const inputs = (await getVideoInputs()).filter((d) => !exclude.has(d.deviceId));
+
+    const preferred = [];
+    const unknown = [];
+    for (const d of inputs) {
+      const f = inferFacingFromLabel(d.label);
+      if (f === mode) preferred.push(d);
+      else if (!f) unknown.push(d);
+    }
+
+    const videoTries = [];
+    // 1) Known matching deviceIds
+    for (const d of preferred) {
+      videoTries.push({ deviceId: { exact: d.deviceId } });
+      videoTries.push({ deviceId: { ideal: d.deviceId } });
+    }
+    // 2) facingMode — critical on Android WebView (do NOT put bare `true` first)
+    videoTries.push(
+      { facingMode: { exact: mode } },
+      { facingMode: { ideal: mode } },
+      { facingMode: mode },
+    );
+    // 3) Unlabeled devices last (labels often empty until after grant)
+    for (const d of unknown) {
+      videoTries.push({ deviceId: { exact: d.deviceId } });
+      videoTries.push({ deviceId: { ideal: d.deviceId } });
+    }
+    // Last resort only when we have no device list at all
+    if (!inputs.length) videoTries.push(true);
+
     let lastErr;
-    for (const video of videoConstraints) {
+    for (const video of videoTries) {
       for (const audio of withAudio ? [true, false] : [false]) {
         try {
-          return await navigator.mediaDevices.getUserMedia({ video, audio });
+          const stream = await navigator.mediaDevices.getUserMedia({ video, audio });
+          const track = stream.getVideoTracks()[0];
+          const got = trackFacing(track);
+          if (got && got !== mode) {
+            stopStream(stream);
+            continue;
+          }
+          const deviceId = track?.getSettings?.()?.deviceId;
+          if (deviceId && exclude.has(deviceId)) {
+            stopStream(stream);
+            continue;
+          }
+          // Refresh labels after a successful open
+          getVideoInputs({ refresh: true }).catch(() => {});
+          return stream;
         } catch (err) {
           lastErr = err;
         }
@@ -268,6 +343,18 @@
 
   function stopStream(stream) {
     stream?.getTracks().forEach((t) => t.stop());
+  }
+
+  async function releaseRawCameras() {
+    stopCompose();
+    stopStream(rawPip);
+    stopStream(rawMain);
+    rawPip = null;
+    rawMain = null;
+    if (localVideo) localVideo.srcObject = null;
+    if (pipVideo) pipVideo.srcObject = null;
+    // Android WebView needs a beat to free the HAL camera before reopen
+    await sleep(isAndroidApp() ? 400 : 60);
   }
 
   function stopCompose() {
@@ -372,31 +459,50 @@
 
   async function startDualMedia() {
     setStatus('Відкриття обох камер…');
-    // environment -> localVideo, user -> pipVideo; audio from front (usually nearer to user) or env
+    await releaseRawCameras();
+
     let envStream;
     let userStream;
+    const openPair = async (firstFacing) => {
+      const secondFacing = firstFacing === 'environment' ? 'user' : 'environment';
+      const first = await openCamera(firstFacing, { withAudio: firstFacing === 'user' });
+      const firstId = first.getVideoTracks()[0]?.getSettings?.()?.deviceId;
+      let second;
+      try {
+        second = await openCamera(secondFacing, {
+          withAudio: secondFacing === 'user' && !first.getAudioTracks().length,
+          excludeDeviceIds: firstId ? [firstId] : [],
+        });
+      } catch (err) {
+        stopStream(first);
+        throw err;
+      }
+      return firstFacing === 'environment'
+        ? { envStream: first, userStream: second }
+        : { envStream: second, userStream: first };
+    };
+
     try {
-      envStream = await openCamera('environment', { withAudio: false });
-      userStream = await openCamera('user', { withAudio: true });
-    } catch (err) {
-      stopStream(envStream);
-      stopStream(userStream);
-      throw new Error(
-        'Цей пристрій не дозволяє дві камери одночасно. ' +
-        (err.message || String(err))
-      );
+      ({ envStream, userStream } = await openPair('environment'));
+    } catch (err1) {
+      try {
+        ({ envStream, userStream } = await openPair('user'));
+      } catch (err2) {
+        stopStream(envStream);
+        stopStream(userStream);
+        throw new Error(
+          'Цей пристрій не дозволяє дві камери одночасно. ' +
+          (err2.message || err1.message || String(err2))
+        );
+      }
     }
 
-    stopStream(rawMain);
-    stopStream(rawPip);
-    stopCompose();
-    // Stop previous outbound canvas tracks
+    // Stop previous outbound canvas tracks only (raw cams are fresh)
     if (localStream) {
-      localStream.getVideoTracks().forEach((t) => {
-        if (t.label === 'canvas' || t.readyState === 'live') {
-          // stop only canvas-derived later after replace
-        }
+      localStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch (_) {}
       });
+      localStream = null;
     }
 
     rawMain = envStream;
@@ -408,8 +514,7 @@
     try { await localVideo.play(); } catch (_) {}
     try { await pipVideo.play(); } catch (_) {}
 
-    // Wait briefly for dimensions
-    await new Promise((r) => setTimeout(r, 250));
+    await sleep(250);
     startComposeLoop();
 
     const canvasStream = composeCanvas.captureStream(24);
@@ -422,15 +527,6 @@
       ...(audioTrack ? [audioTrack] : []),
     ]);
 
-    // Stop old outbound video tracks if any (not raw cams)
-    if (localStream) {
-      localStream.getVideoTracks().forEach((t) => {
-        if (!rawMain.getVideoTracks().includes(t) && !rawPip.getVideoTracks().includes(t)) {
-          t.stop();
-        }
-      });
-    }
-
     await publishOutbound(outbound);
     applyMirror();
     updateFacingUi();
@@ -438,16 +534,20 @@
   }
 
   async function startSingleMedia() {
-    stopCompose();
     previewWrap.classList.remove('dual-mode');
     composeCanvas.hidden = true;
     pipVideo.hidden = true;
     localVideo.hidden = false;
 
-    stopStream(rawPip);
-    rawPip = null;
+    await releaseRawCameras();
+
     const stream = await openCamera(facingMode, { withAudio: true });
-    stopStream(rawMain);
+    // Drop old outbound (canvas or previous cam) after new stream is ready
+    if (localStream && localStream !== stream) {
+      localStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch (_) {}
+      });
+    }
     rawMain = stream;
 
     localVideo.srcObject = stream;
@@ -468,13 +568,18 @@
 
   async function switchCamera(nextFacing) {
     const target = nextFacing || (facingMode === 'user' ? 'environment' : 'user');
+    if (nextFacing && target === facingMode && localStream && !dualMode && rawMain) {
+      updateFacingUi();
+      return;
+    }
+    const prevFacing = facingMode;
     setFacing(target);
     if (!localStream && !rawMain) return;
 
     try {
       if (dualMode) {
-        // Only swap main/PiP roles — both already open
         setStatus(target === 'user' ? 'Головна: фронтальна' : 'Головна: задня');
+        updateFacingUi();
         setTimeout(() => {
           setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
         }, 600);
@@ -485,8 +590,10 @@
       setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
     } catch (err) {
       console.error(err);
+      setFacing(prevFacing);
       setStatus('Не вдалося змінити камеру');
       alert(err.message || String(err));
+      throw err;
     }
   }
 
@@ -498,9 +605,6 @@
       if (on) {
         await startDualMedia();
       } else {
-        stopStream(rawPip);
-        rawPip = null;
-        stopCompose();
         await startSingleMedia();
       }
       setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
@@ -509,6 +613,7 @@
       setDual(was);
       setStatus('Dual camera недоступна');
       alert(err.message || String(err));
+      throw err;
     }
   }
 
