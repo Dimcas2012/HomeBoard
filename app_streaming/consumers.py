@@ -146,7 +146,7 @@ class SignalingConsumer(AsyncWebsocketConsumer):
         if self.role == 'camera' and self.camera:
             target = data.get('viewer_channel')
             payload = {**data, 'from': 'camera', 'camera_id': self.camera['id']}
-            if msg_type in ('offer', 'answer', 'ice', 'offer_error', 'camera_state'):
+            if msg_type in ('offer', 'answer', 'ice', 'offer_error', 'camera_state', 'control_ack'):
                 _signal_log(
                     f'cam→viewer {msg_type} cam={self.camera["id"]} target={bool(target)}\n'
                 )

@@ -196,16 +196,18 @@ class CameraActivity : AppCompatActivity() {
         val cameraId = prefs.cameraId ?: return
         val token = prefs.deviceToken ?: return
         val name = prefs.cameraName ?: "Camera"
-        val payload = JSONObject()
-            .put("camera_id", cameraId)
-            .put("device_token", token)
-            .put("name", name)
-            .toString()
-        val payloadLiteral = JSONObject.quote(payload)
         val nameLiteral = JSONObject.quote(name)
         val js = """
             (function() {
-              try { localStorage.setItem('homeboard_camera', $payloadLiteral); } catch (e) {}
+              var data = {
+                camera_id: ${JSONObject.quote(cameraId)},
+                device_token: ${JSONObject.quote(token)},
+                name: $nameLiteral
+              };
+              try { localStorage.setItem('homeboard_camera', JSON.stringify(data)); } catch (e) {}
+              if (window.HomeBoardSetCreds) {
+                try { window.HomeBoardSetCreds(data); } catch (e) {}
+              }
               var pair = document.getElementById('pair-form');
               var live = document.getElementById('live-controls');
               var nameEl = document.getElementById('camName');

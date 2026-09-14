@@ -3,6 +3,7 @@ import json
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
 from app_cameras.models import Camera, PairingCode
@@ -35,6 +36,7 @@ def _webrtc_ctx():
 
 @login_required
 @require_GET
+@never_cache
 def viewer_index(request):
     cameras = Camera.objects.filter(owner=request.user)
     return render(request, 'app_viewer/viewer.html', {
@@ -44,6 +46,7 @@ def viewer_index(request):
 
 
 @require_GET
+@never_cache
 def camera_mode(request):
     """Phone/PC browser camera page — pairing then stream."""
     return render(request, 'app_viewer/camera.html', _webrtc_ctx())
@@ -51,6 +54,7 @@ def camera_mode(request):
 
 @login_required
 @require_GET
+@never_cache
 def settings_panel(request):
     cameras = Camera.objects.filter(owner=request.user)
     codes = [

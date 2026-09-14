@@ -82,6 +82,12 @@
     backdrop.classList.add('show');
     applyStateToDrawer(cameraState.get(cameraId));
     sendControl(cameraId, 'get_state');
+    setTimeout(() => {
+      if (selectedCameraId === cameraId && !cameraState.get(cameraId)) {
+        document.getElementById('ctrlStatus').textContent =
+          'Немає відповіді камери — перезавантажте /camera/ або Android-додаток';
+      }
+    }, 4000);
   }
 
   function closeDrawer() {

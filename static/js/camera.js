@@ -622,6 +622,13 @@
   }
 
   function wsConnect() {
+    if (!creds?.camera_id || !creds?.device_token) {
+      creds = loadCreds() || creds;
+    }
+    if (!creds?.camera_id || !creds?.device_token) {
+      setStatus('Немає credentials — зробіть pairing');
+      return;
+    }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws/signal/?role=camera&camera_id=${encodeURIComponent(creds.camera_id)}&token=${encodeURIComponent(creds.device_token)}`;
     ws = new WebSocket(url);
@@ -634,7 +641,12 @@
   }
 
   async function onSignal(evt) {
-    const msg = JSON.parse(evt.data);
+    let msg;
+    try {
+      msg = JSON.parse(evt.data);
+    } catch (_) {
+      return;
+    }
     if (msg.type === 'watch' && msg.from === 'viewer') {
       await createOfferForViewer(msg.viewer_channel);
       return;
@@ -652,7 +664,12 @@
       return;
     }
     if (msg.type === 'control' && msg.from === 'viewer') {
-      await handleControl(msg);
+      try {
+        await handleControl(msg);
+      } catch (err) {
+        console.error('control failed', err);
+        sendControlAck(msg, false, err.message || String(err));
+      }
     }
   }
 
@@ -691,16 +708,36 @@
     };
   }
 
-  function emitState(extra = {}) {
+  function emitState(extra = {}, viewerChannel = null) {
+    if (!creds?.camera_id) {
+      creds = loadCreds() || creds;
+    }
     if (!ws || ws.readyState !== WebSocket.OPEN || !creds?.camera_id) return;
-    ws.send(JSON.stringify({
+    const payload = {
       type: 'camera_state',
       camera_id: creds.camera_id,
       state: { ...collectState(), ...extra },
-    }));
+    };
+    if (viewerChannel) payload.viewer_channel = viewerChannel;
+    ws.send(JSON.stringify(payload));
+  }
+
+  function sendControlAck(msg, ok, error) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !creds?.camera_id) return;
+    const payload = {
+      type: 'control_ack',
+      camera_id: creds.camera_id,
+      action: msg?.action || null,
+      ok: !!ok,
+      error: error || '',
+      state: collectState(),
+    };
+    if (msg?.viewer_channel) payload.viewer_channel = msg.viewer_channel;
+    ws.send(JSON.stringify(payload));
   }
 
   async function handleControl(msg) {
+    if (!creds?.camera_id) creds = loadCreds() || creds;
     const action = msg.action;
     const value = msg.value;
     let ok = true;
@@ -708,7 +745,8 @@
 
     try {
       if (action === 'get_state') {
-        emitState();
+        sendControlAck(msg, true, '');
+        emitState({}, msg.viewer_channel);
         return;
       }
       if (action === 'flip') {
@@ -770,17 +808,8 @@
       error = err.message || String(err);
     }
 
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'control_ack',
-        camera_id: creds.camera_id,
-        action,
-        ok,
-        error,
-        state: collectState(),
-      }));
-    }
-    emitState();
+    sendControlAck(msg, ok, error);
+    emitState({}, msg.viewer_channel);
   }
 
   async function createOfferForViewer(viewerChannel) {
@@ -1095,6 +1124,14 @@
   applyMirror();
   updateFacingUi();
   polyfillMediaDevices();
+
+  // Android WebView injects credentials after page load — accept late updates.
+  window.HomeBoardSetCreds = (data) => {
+    if (!data?.camera_id || !data?.device_token) return;
+    saveCreds(data);
+    showLive();
+  };
+
   creds = loadCreds();
   if (creds?.camera_id && creds?.device_token) showLive();
   else ensureLoopRecorder()?.refreshUsage();
