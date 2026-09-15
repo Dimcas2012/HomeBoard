@@ -57,6 +57,10 @@
   let rawPip = null;
   let ws = null;
   let peers = new Map();
+  /** @type {Map<string, { el: HTMLAudioElement, stream: MediaStream }>} */
+  const remoteAudioByViewer = new Map();
+  const remoteAudioEl = document.getElementById('remoteAudio');
+  const talkbackBadge = document.getElementById('talkbackBadge');
   let motionTimer = null;
   let soundTimer = null;
   let soundAudioCtx = null;
@@ -1011,6 +1015,65 @@
     return window.HomeBoardNative || null;
   }
 
+  function syncTalkbackUi() {
+    const active = remoteAudioByViewer.size > 0;
+    if (talkbackBadge) talkbackBadge.hidden = !active;
+    const native = nativeBridge();
+    try {
+      if (native?.setSpeakerphone) native.setSpeakerphone(active);
+    } catch (_) { /* ignore */ }
+  }
+
+  function detachRemoteAudio(viewerChannel) {
+    const entry = remoteAudioByViewer.get(viewerChannel);
+    if (!entry) return;
+    if (entry.el && entry.el !== remoteAudioEl) {
+      try { entry.el.srcObject = null; } catch (_) {}
+      entry.el.remove();
+    }
+    remoteAudioByViewer.delete(viewerChannel);
+    if (!remoteAudioByViewer.size && remoteAudioEl) {
+      try { remoteAudioEl.srcObject = null; } catch (_) {}
+    } else if (remoteAudioByViewer.size && remoteAudioEl) {
+      const last = [...remoteAudioByViewer.values()].pop();
+      if (last) {
+        remoteAudioEl.srcObject = last.stream;
+        remoteAudioEl.play().catch(() => {});
+      }
+    }
+    syncTalkbackUi();
+  }
+
+  function attachRemoteAudio(viewerChannel, ev) {
+    if (!ev?.track || ev.track.kind !== 'audio') return;
+    const stream = (ev.streams && ev.streams[0])
+      ? ev.streams[0]
+      : new MediaStream([ev.track]);
+    detachRemoteAudio(viewerChannel);
+    const el = remoteAudioEl || document.createElement('audio');
+    if (!remoteAudioEl) {
+      el.autoplay = true;
+      el.setAttribute('playsinline', '');
+      document.body.appendChild(el);
+    }
+    el.srcObject = stream;
+    el.muted = false;
+    el.volume = 1;
+    el.play().catch(() => {});
+    ev.track.addEventListener('ended', () => detachRemoteAudio(viewerChannel), { once: true });
+    remoteAudioByViewer.set(viewerChannel, { el, stream });
+    syncTalkbackUi();
+  }
+
+  function closePeer(viewerChannel) {
+    const pc = peers.get(viewerChannel);
+    if (pc) {
+      try { pc.close(); } catch (_) {}
+      peers.delete(viewerChannel);
+    }
+    detachRemoteAudio(viewerChannel);
+  }
+
   function collectState() {
     const native = nativeBridge();
     let torch = false;
@@ -1058,6 +1121,7 @@
       eco,
       torch_available: torchAvailable || !!native?.setTorch,
       eco_available: ecoAvailable || !!native?.setEco,
+      talkback_available: true,
       native: !!native,
       online: ws?.readyState === WebSocket.OPEN,
       analytics: {
@@ -1252,8 +1316,7 @@
       return;
     }
     if (peers.has(viewerChannel)) {
-      peers.get(viewerChannel).close();
-      peers.delete(viewerChannel);
+      closePeer(viewerChannel);
     }
     const pc = new RTCPeerConnection(ICE);
     peers.set(viewerChannel, pc);
@@ -1263,10 +1326,20 @@
     if (audioTrack) {
       pc.addTrack(audioTrack, localStream);
     } else {
-      // Reserve audio m-line so mic can be attached later without full renegotiation gaps.
-      pc.addTransceiver('audio', { direction: 'sendonly' });
+      // Bidirectional audio m-line: mic out + talkback in from viewer.
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
     }
+    // Prefer sendrecv so viewer can push talkback to phone speakers.
+    pc.getTransceivers().forEach((t) => {
+      const kind = t.sender?.track?.kind || t.receiver?.track?.kind;
+      if (kind === 'audio' || (!t.sender?.track && !t.receiver?.track && t.direction === 'sendonly')) {
+        try { t.direction = 'sendrecv'; } catch (_) { /* ignore */ }
+      }
+    });
     window.HomeBoardWebRTC?.preferH264?.(pc);
+    pc.ontrack = (ev) => {
+      if (ev.track?.kind === 'audio') attachRemoteAudio(viewerChannel, ev);
+    };
     pc.onicecandidate = (ev) => {
       if (ev.candidate && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -1280,6 +1353,9 @@
       if (pc.connectionState === 'connected') setStatus('Streaming');
       else if (pc.connectionState === 'failed') setStatus('WebRTC failed');
       else if (pc.connectionState === 'connecting') setStatus('Connecting…');
+      else if (pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
+        detachRemoteAudio(viewerChannel);
+      }
     };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -1966,8 +2042,7 @@
   };
 
   document.getElementById('btnStop').onclick = async () => {
-    peers.forEach((pc) => pc.close());
-    peers.clear();
+    [...peers.keys()].forEach((id) => closePeer(id));
     ws?.close();
     if (loopRecorder?.active) {
       try { await loopRecorder.stop(); } catch (_) {}

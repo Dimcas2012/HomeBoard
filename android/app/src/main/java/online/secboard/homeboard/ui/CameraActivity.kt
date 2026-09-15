@@ -31,6 +31,7 @@ import online.secboard.homeboard.bridge.HomeBoardNativeBridge
 import online.secboard.homeboard.data.HomeBoardApi
 import online.secboard.homeboard.data.Prefs
 import online.secboard.homeboard.databinding.ActivityCameraBinding
+import online.secboard.homeboard.util.AudioRouter
 import online.secboard.homeboard.util.EconomyController
 import org.json.JSONObject
 
@@ -38,6 +39,7 @@ class CameraActivity : AppCompatActivity() {
     private lateinit var binding: ActivityCameraBinding
     private lateinit var prefs: Prefs
     private lateinit var economy: EconomyController
+    private lateinit var audioRouter: AudioRouter
     private val api = HomeBoardApi()
     private var pendingWebPermission: PermissionRequest? = null
     private var pageReady = false
@@ -72,6 +74,7 @@ class CameraActivity : AppCompatActivity() {
         setContentView(binding.root)
         prefs = Prefs(this)
         economy = EconomyController(this)
+        audioRouter = AudioRouter(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         if (!prefs.isPaired) {
@@ -99,6 +102,7 @@ class CameraActivity : AppCompatActivity() {
         binding.webView.addJavascriptInterface(
             HomeBoardNativeBridge(
                 economy,
+                audioRouter,
                 onEcoChanged = { on ->
                     runOnUiThread {
                         if (on) enterEconomyMode() else exitEconomyMode()
@@ -106,6 +110,11 @@ class CameraActivity : AppCompatActivity() {
                 },
                 onAnalytics = { json ->
                     runOnUiThread { applyAnalyticsUi(json) }
+                },
+                onTalkback = { on ->
+                    runOnUiThread {
+                        binding.talkBadge.visibility = if (on) View.VISIBLE else View.GONE
+                    }
                 },
             ),
             "HomeBoardNative",
@@ -336,6 +345,7 @@ class CameraActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        audioRouter.release()
         economy.release()
         economy.exitEcoScreen(window)
         binding.webView.apply {

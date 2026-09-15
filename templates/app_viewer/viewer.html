@@ -28,6 +28,7 @@
         <div class="tile-sectors-label" hidden></div>
         <div class="tile-controls" data-controls-for="{{ cam.id }}">
           <button type="button" data-act="sound" title="Звук">🔊</button>
+          <button type="button" data-act="talk" title="Говорити на динаміки камери">🎤</button>
           <button type="button" data-act="panel" title="Налаштування">⚙</button>
           <button type="button" data-act="flip" title="Перемкнути камеру">⇄</button>
           <button type="button" data-act="torch" title="Ліхтарик">🔦</button>
@@ -57,6 +58,7 @@
     <div class="ctrl-row">
       <button class="btn" type="button" data-act="start">Старт</button>
       <button class="btn secondary" type="button" data-act="stop">Стоп</button>
+      <button class="btn secondary" type="button" data-act="talk" id="ctrlTalk">🎤 Говорити</button>
       <button class="btn secondary" type="button" data-act="flip">⇄ Камера</button>
     </div>
     <label class="ctrl-check"><input type="checkbox" data-act="dual"> Обидві камери</label>

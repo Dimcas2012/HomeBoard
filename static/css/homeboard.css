@@ -525,6 +525,28 @@ a:hover { text-decoration: underline; }
   z-index: 4;
   background: transparent;
 }
+.talkback-badge {
+  position: absolute;
+  left: .75rem;
+  bottom: .75rem;
+  z-index: 5;
+  padding: .35rem .65rem;
+  border-radius: 999px;
+  background: rgba(6, 35, 31, .88);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: .8rem;
+  font-weight: 600;
+  pointer-events: none;
+}
+.talkback-badge[hidden] { display: none !important; }
+#remoteAudio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
 .preview-wrap video.mirror {
   transform: scaleX(-1);
 }

@@ -11,6 +11,9 @@
   const peers = new Map();
   const cameraState = new Map();
   const watchTimers = new Map();
+  /** cameraId -> MediaStreamTrack (outbound talk mic) */
+  const talkTracks = new Map();
+  let talkingCameraId = null;
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const SOUND_KEY = 'homeboard_viewer_sound';
   let wantSound = localStorage.getItem(SOUND_KEY) !== '0';
@@ -34,6 +37,111 @@
       btn.classList.toggle('on', wantSound);
       btn.title = wantSound ? 'Вимкнути звук' : 'Увімкнути звук';
     });
+    syncTalkButtons();
+  }
+
+  function syncTalkButtons() {
+    document.querySelectorAll('.tile-controls button[data-act="talk"]').forEach((btn) => {
+      const id = btn.closest('.tile')?.dataset?.cameraId;
+      const on = !!id && talkingCameraId === id;
+      btn.classList.toggle('on', on);
+      btn.textContent = on ? '🎤●' : '🎤';
+      btn.title = on ? 'Припинити говорити' : 'Говорити на динаміки камери';
+    });
+    const ctrl = document.getElementById('ctrlTalk');
+    if (ctrl) {
+      const on = !!selectedCameraId && talkingCameraId === selectedCameraId;
+      ctrl.classList.toggle('on', on);
+      ctrl.textContent = on ? '🎤 Говорите…' : '🎤 Говорити';
+    }
+  }
+
+  function audioSender(pc) {
+    if (!pc) return null;
+    const withTrack = pc.getSenders().find((s) => s.track?.kind === 'audio');
+    if (withTrack) return withTrack;
+    const t = pc.getTransceivers().find((x) => x.receiver?.track?.kind === 'audio');
+    return t?.sender || null;
+  }
+
+  function enableAudioSendrecv(pc) {
+    if (!pc) return;
+    pc.getTransceivers().forEach((t) => {
+      if (t.receiver?.track?.kind !== 'audio') return;
+      try {
+        if (t.direction === 'recvonly' || t.direction === 'inactive') t.direction = 'sendrecv';
+      } catch (_) { /* ignore */ }
+    });
+  }
+
+  async function stopTalk(cameraId = talkingCameraId) {
+    if (!cameraId) return;
+    const track = talkTracks.get(cameraId);
+    if (track) {
+      try { track.stop(); } catch (_) {}
+      talkTracks.delete(cameraId);
+    }
+    const entry = peers.get(cameraId);
+    const sender = audioSender(entry?.pc);
+    if (sender) {
+      try { await sender.replaceTrack(null); } catch (_) { /* ignore */ }
+    }
+    if (talkingCameraId === cameraId) talkingCameraId = null;
+    syncTalkButtons();
+  }
+
+  async function startTalk(cameraId) {
+    if (!cameraId) return;
+    const el = tile(cameraId);
+    if (el?.dataset?.source !== 'browser') {
+      toast('Talkback лише для browser / Android камер');
+      return;
+    }
+    const entry = peers.get(cameraId);
+    if (!entry?.pc || !['connected', 'connecting'].includes(entry.pc.connectionState)) {
+      toast('Спочатку дочекайтесь відео зі стріму');
+      return;
+    }
+    unlockAudio();
+    if (talkingCameraId && talkingCameraId !== cameraId) {
+      await stopTalk(talkingCameraId);
+    }
+    if (talkingCameraId === cameraId) {
+      await stopTalk(cameraId);
+      toast('Мікрофон вимкнено');
+      return;
+    }
+    try {
+      enableAudioSendrecv(entry.pc);
+      const audioT = entry.pc.getTransceivers().find((t) => t.receiver?.track?.kind === 'audio');
+      const dir = audioT?.currentDirection || audioT?.direction;
+      if (audioT && (dir === 'recvonly' || dir === 'inactive')) {
+        toast('Перепідключення для talkback…');
+        scheduleWatch(cameraId, { force: true });
+        return;
+      }
+      const mic = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      const track = mic.getAudioTracks()[0];
+      if (!track) throw new Error('Немає мікрофона');
+      const sender = audioSender(entry.pc);
+      if (!sender) throw new Error('Немає audio sender — оновіть сторінку камери');
+      await sender.replaceTrack(track);
+      talkTracks.set(cameraId, track);
+      talkingCameraId = cameraId;
+      syncTalkButtons();
+      toast('Говоріть — звук іде на динаміки телефону');
+    } catch (err) {
+      console.error(err);
+      toast(err.message || 'Не вдалося відкрити мікрофон');
+      await stopTalk(cameraId);
+    }
   }
 
   function applyTileSound(video) {
@@ -387,6 +495,7 @@
       });
     }
     if (selectedCameraId === cameraId) applyStateToDrawer(state);
+    syncTalkButtons();
   }
 
   function ensureDetectUi(el) {
@@ -518,6 +627,7 @@
   function controlsHtml(id) {
     return `<div class="tile-controls" data-controls-for="${id}">
       <button type="button" data-act="sound" title="Звук">🔊</button>
+      <button type="button" data-act="talk" title="Говорити на динаміки камери">🎤</button>
       <button type="button" data-act="panel" title="Налаштування">⚙</button>
       <button type="button" data-act="flip" title="Перемкнути камеру">⇄</button>
       <button type="button" data-act="torch" title="Ліхтарик">🔦</button>
@@ -647,6 +757,7 @@
   }
 
   function closePeer(cameraId) {
+    stopTalk(cameraId);
     const entry = peers.get(cameraId);
     if (!entry) return;
     if (entry.watchTimer) clearTimeout(entry.watchTimer);
@@ -735,6 +846,10 @@
       setViewerSound(!wantSound);
       return;
     }
+    if (act === 'talk') {
+      startTalk(cameraId);
+      return;
+    }
     if (act === 'panel') {
       openDrawer(cameraId);
       return;
@@ -815,6 +930,7 @@
       const act = btn.dataset.act;
       if (act === 'start') sendControl(selectedCameraId, 'start');
       if (act === 'stop') sendControl(selectedCameraId, 'stop');
+      if (act === 'talk') startTalk(selectedCameraId);
       if (act === 'flip') sendControl(selectedCameraId, 'flip');
       if (act === 'refresh_state') sendControl(selectedCameraId, 'get_state');
       if (act === 'sectors_all') {
@@ -960,6 +1076,7 @@
       if (!entry) return;
       try {
         await entry.pc.setRemoteDescription(msg.sdp);
+        enableAudioSendrecv(entry.pc);
         window.HomeBoardWebRTC?.preferH264?.(entry.pc);
         const answer = await entry.pc.createAnswer();
         await entry.pc.setLocalDescription(answer);

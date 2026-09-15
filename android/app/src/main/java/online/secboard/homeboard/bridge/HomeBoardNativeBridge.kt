@@ -1,13 +1,16 @@
 package online.secboard.homeboard.bridge
 
 import android.webkit.JavascriptInterface
+import online.secboard.homeboard.util.AudioRouter
 import online.secboard.homeboard.util.EconomyController
 import org.json.JSONObject
 
 class HomeBoardNativeBridge(
     private val economy: EconomyController,
+    private val audioRouter: AudioRouter,
     private val onEcoChanged: (Boolean) -> Unit,
     private val onAnalytics: (JSONObject) -> Unit = {},
+    private val onTalkback: (Boolean) -> Unit = {},
 ) {
     @JavascriptInterface
     fun getCapabilities(): String {
@@ -16,6 +19,8 @@ class HomeBoardNativeBridge(
             .put("eco", true)
             .put("analytics", true)
             .put("phone_detect", false)
+            .put("talkback", true)
+            .put("speaker", true)
             .toString()
     }
 
@@ -35,6 +40,17 @@ class HomeBoardNativeBridge(
 
     @JavascriptInterface
     fun isEcoOn(): Boolean = economy.ecoScreenOn
+
+    /** Route remote WebRTC audio to the phone loudspeaker. */
+    @JavascriptInterface
+    fun setSpeakerphone(on: Boolean): Boolean {
+        val ok = audioRouter.setSpeakerphone(on)
+        if (ok) onTalkback(on)
+        return ok
+    }
+
+    @JavascriptInterface
+    fun isSpeakerphoneOn(): Boolean = audioRouter.isSpeakerOn()
 
     @JavascriptInterface
     fun onAnalyticsStatus(json: String) {

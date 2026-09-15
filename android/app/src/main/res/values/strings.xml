@@ -10,5 +10,6 @@
     <string name="ai_badge">AI</string>
     <string name="ai_phone">AI·phone</string>
     <string name="ai_eco_hint">AI працює у фоні</string>
+    <string name="talk_badge">🔊 Viewer</string>
     <string name="default_server">https://homeboard.secboard.online</string>
 </resources>
