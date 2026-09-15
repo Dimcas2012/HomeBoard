@@ -174,7 +174,7 @@ def send_test_message(integration: TelegramIntegration) -> None:
     integration.mark_ok()
 
 
-def notify_motion(event: MotionEvent, *, sectors: list | None = None, score=None) -> bool:
+def notify_motion(event: MotionEvent, *, sectors: list | None = None, score=None, source='video') -> bool:
     """Send motion alert to the camera owner's Telegram, if configured."""
     try:
         integration = TelegramIntegration.objects.filter(
@@ -200,8 +200,9 @@ def notify_motion(event: MotionEvent, *, sectors: list | None = None, score=None
     base = public_base_url() or 'https://homeboard.secboard.online'
     viewer_url = f'{base}/viewer/'
     recordings_url = f'{base}/recordings/'
+    kind = '🔊 Звук' if str(source).lower() == 'sound' else '🚨 Рух'
     lines = [
-        f'🚨 Рух: {camera_name}{sector_bit}{score_bit}',
+        f'{kind}: {camera_name}{sector_bit}{score_bit}',
         event.detected_at.strftime('%H:%M:%S %d.%m.%Y'),
         '',
         f'👁 Live: {viewer_url}',
@@ -238,6 +239,70 @@ def notify_motion(event: MotionEvent, *, sectors: list | None = None, score=None
         return False
     except Exception as exc:
         logger.exception('telegram notify failed')
+        integration.mark_error(str(exc))
+        return False
+
+
+def notify_detection(event) -> bool:
+    """Send AI detection alert (person/car/…) to Telegram."""
+    try:
+        integration = TelegramIntegration.objects.filter(
+            owner_id=event.camera.owner_id,
+            is_enabled=True,
+            notify_motion=True,
+        ).exclude(bot_token='').exclude(chat_id='').first()
+    except Exception:
+        logger.exception('telegram lookup failed')
+        return False
+    if not integration or not integration.allows_camera(event.camera):
+        return False
+
+    base = public_base_url() or 'https://homeboard.secboard.online'
+    classes = ', '.join(event.classes) if getattr(event, 'classes', None) else 'object'
+    summary = (getattr(event, 'summary', '') or '').strip()
+    lines = [
+        f'🤖 AI: {event.camera.name} · {classes}',
+        event.started_at.strftime('%H:%M:%S %d.%m.%Y'),
+    ]
+    if summary:
+        lines.append(summary)
+    lines.extend([
+        '',
+        f'📊 Події: {base}/analytics/',
+        f'👁 Live: {base}/viewer/',
+    ])
+    if integration.send_video_link:
+        lines.append(f'🎬 Записи: {base}/recordings/')
+    text = '\n'.join(lines)
+
+    try:
+        if integration.send_screenshot and event.thumbnail:
+            try:
+                photo = prepare_telegram_jpeg(
+                    event.thumbnail.path,
+                    quality=integration.clamped_image_quality(),
+                    max_width=integration.clamped_image_max_width(),
+                )
+            except Exception:
+                logger.exception('telegram image prepare failed; using original')
+                with open(event.thumbnail.path, 'rb') as fh:
+                    photo = fh.read()
+            api.send_photo(
+                integration.bot_token,
+                integration.chat_id,
+                caption=text[:1024],
+                photo_bytes=photo,
+            )
+        else:
+            api.send_message(integration.bot_token, integration.chat_id, text)
+        integration.mark_ok()
+        return True
+    except api.TelegramApiError as exc:
+        logger.warning('telegram detection notify failed: %s', exc)
+        integration.mark_error(str(exc))
+        return False
+    except Exception as exc:
+        logger.exception('telegram detection notify failed')
         integration.mark_error(str(exc))
         return False
 

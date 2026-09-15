@@ -8,9 +8,11 @@
     <nav>
       <a class="active" href="{% url 'viewer:index' %}">Viewer</a>
       <a href="{% url 'recordings:list' %}">Записи</a>
+      <a href="{% url 'analytics:events' %}">AI</a>
       <a href="{% url 'viewer:settings' %}">Камери</a>
       <a href="{% url 'integration:telegram' %}">Інтеграції</a>
       <a href="{% url 'camera_mode' %}" target="_blank" rel="noopener">Режим камери</a>
+      <button class="btn secondary" type="button" id="btnViewerSound" title="Звук з камер" style="padding:.35rem .7rem">🔊 Звук</button>
       <span class="muted">{{ request.user.username }}</span>
       <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
     </nav>
@@ -18,18 +20,23 @@
   <main id="camera-grid" class="grid">
     {% for cam in cameras %}
       <div class="tile" data-camera-id="{{ cam.id }}" data-source="{{ cam.source_type }}" data-whep="{{ cam.webrtc_play_url }}">
-        <video autoplay playsinline muted></video>
+        <video autoplay playsinline webkit-playsinline muted></video>
         <div class="placeholder">
           {% if cam.source_type == 'rtsp' %}IP / MediaMTX{% else %}Офлайн{% endif %}
         </div>
         <div class="tile-sectors" aria-hidden="true"></div>
         <div class="tile-sectors-label" hidden></div>
         <div class="tile-controls" data-controls-for="{{ cam.id }}">
+          <button type="button" data-act="sound" title="Звук">🔊</button>
           <button type="button" data-act="panel" title="Налаштування">⚙</button>
           <button type="button" data-act="flip" title="Перемкнути камеру">⇄</button>
           <button type="button" data-act="torch" title="Ліхтарик">🔦</button>
           <button type="button" data-act="eco" title="Економ-режим">☾</button>
           <button type="button" data-act="fs" title="На весь екран">⛶</button>
+        </div>
+        <div class="tile-noise" hidden>
+          <span class="tile-noise-label">Шум —</span>
+          <span class="tile-noise-bar" aria-hidden="true"><i></i></span>
         </div>
         <div class="tile-meta">
           <span><span class="dot"></span>{{ cam.name }}</span>
@@ -56,8 +63,20 @@
     <label class="ctrl-check"><input type="checkbox" data-act="motion" checked> Motion</label>
     <label class="ctrl-check"><input type="checkbox" data-act="record_motion" checked> Запис при русі</label>
     <div class="ctrl-motion">
-      <label class="muted">Рівень реагування <strong id="ctrlSensLabel">6</strong>/10</label>
+      <label class="muted">Відео · рівень <strong id="ctrlSensLabel">6</strong>/10</label>
       <input type="range" data-act="motion_sensitivity" min="1" max="10" step="1" value="6">
+      <label class="ctrl-check" style="margin-top:.35rem">
+        <input type="checkbox" data-act="motion_sound_enabled"> Звук мікрофона
+      </label>
+      <label class="muted">
+        Звук · рівень <strong id="ctrlSoundSensLabel">6</strong>/10
+        · зараз <strong id="ctrlSoundLiveLevel">—</strong>
+      </label>
+      <div class="ctrl-noise" id="ctrlNoiseMeter" hidden>
+        <span class="tile-noise-bar" aria-hidden="true"><i id="ctrlNoiseFill"></i></span>
+        <span class="muted" id="ctrlNoiseHint" style="font-size:.75rem"></span>
+      </div>
+      <input type="range" data-act="motion_sound_sensitivity" min="1" max="10" step="1" value="6">
       <label class="muted">Пауза <strong id="ctrlCdLabel">8</strong> с</label>
       <input type="range" data-act="motion_cooldown" min="3" max="60" step="1" value="8">
       <label class="muted">Сектори зони</label>

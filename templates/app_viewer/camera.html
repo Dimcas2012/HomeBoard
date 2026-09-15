@@ -11,6 +11,7 @@
     <video id="pipVideo" autoplay playsinline muted hidden></video>
     <canvas id="composeCanvas" hidden></canvas>
     <div id="motionOverlay" class="motion-overlay" hidden></div>
+    <canvas id="aiOverlay" class="ai-overlay" hidden></canvas>
   </div>
   <section class="panel">
     <div id="secure-hint" class="muted" style="margin-bottom:.75rem" hidden></div>
@@ -49,6 +50,7 @@
       <span class="muted" id="localUsage">Локально: —</span>
       <button class="btn secondary" id="btnLocalList" type="button">Локальні записи</button>
       <span class="muted" id="camName"></span>
+      <span class="status-pill" id="aiStatus" hidden>AI</span>
     </div>
     <p class="muted" id="dualHint" style="margin:.65rem 0 0;font-size:.85rem" hidden>
       Обидві камери зводяться в один стрім (велика + PiP). Не всі телефони дозволяють дві камери одночасно.
@@ -59,10 +61,27 @@
         <button class="btn secondary" id="btnMotionClose" type="button">Закрити</button>
       </div>
       <label class="motion-field">
-        <span>Рівень реагування <strong id="motionSensLabel">6</strong>/10</span>
+        <span>Відео · рівень реагування <strong id="motionSensLabel">6</strong>/10</span>
         <input type="range" id="motionSensitivity" min="1" max="10" step="1" value="6">
         <span class="muted motion-hint">1 — слабко (менше хибних), 10 — дуже чутливо</span>
       </label>
+      <div class="motion-field">
+        <label class="status-pill">
+          <input type="checkbox" id="motionSoundEnabled"> Реагувати на звук мікрофона
+        </label>
+        <label class="motion-field" style="margin-top:.5rem">
+          <span>
+            Звук · рівень реагування <strong id="motionSoundSensLabel">6</strong>/10
+            · зараз <strong id="motionSoundNowLabel">—</strong>
+          </span>
+          <input type="range" id="motionSoundSensitivity" min="1" max="10" step="1" value="6">
+          <div class="ctrl-noise" id="motionSoundMeter" style="margin-top:.35rem">
+            <span class="tile-noise-bar" aria-hidden="true"><i id="motionSoundFill"></i></span>
+          </div>
+          <span class="muted motion-hint">Окремо від відео. Потрібен дозвіл на мікрофон у стрімі камери.</span>
+        </label>
+        <p class="muted motion-hint" id="motionSoundLive" style="margin:.35rem 0 0">Mic: —</p>
+      </div>
       <label class="motion-field">
         <span>Пауза між спрацюваннями <strong id="motionCdLabel">8</strong> с</span>
         <input type="range" id="motionCooldown" min="3" max="60" step="1" value="8">
@@ -132,5 +151,6 @@
 </script>
 <script src="/static/js/local_store.js?v={{ static_bust }}"></script>
 <script src="/static/js/webrtc_common.js?v={{ static_bust }}"></script>
+<script src="/static/js/analytics_phone.js?v={{ static_bust }}"></script>
 <script src="/static/js/camera.js?v={{ static_bust }}"></script>
 {% endblock %}

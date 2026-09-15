@@ -189,3 +189,7 @@ mediamtx/bin/
 
 
 logs/
+
+# ML weights (download locally / via ultralytics)
+models/*.pt
+models/*.onnx

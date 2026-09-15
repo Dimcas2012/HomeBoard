@@ -30,6 +30,22 @@
             android:textStyle="bold"
             android:textSize="14sp" />
 
+        <TextView
+            android:id="@+id/aiBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/bg_ai_badge"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:text="AI"
+            android:textColor="@color/hb_warn"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnTorch"
             style="@style/Widget.Material3.Button.TextButton"
@@ -68,14 +84,32 @@
         android:focusable="true"
         android:visibility="gone">
 
-        <TextView
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:gravity="center"
-            android:padding="24dp"
-            android:text="Економ-режим\nНатисніть, щоб показати екран"
-            android:textColor="#66FFFFFF"
-            android:textSize="14sp" />
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="Економ-режим\nНатисніть, щоб показати екран"
+                android:textColor="#66FFFFFF"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/ecoAiHint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:text="AI працює у фоні"
+                android:textColor="#88FFB020"
+                android:textSize="12sp"
+                android:visibility="gone" />
+        </LinearLayout>
     </FrameLayout>
 </FrameLayout>

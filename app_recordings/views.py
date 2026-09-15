@@ -64,6 +64,13 @@ def upload_recording(request):
         rec.motion_event_id = motion_event_id
     rec.save()
     Recording.enforce_retention(camera.owner)
+    # Link to recent AI detection when present
+    detection_event_id = request.POST.get('detection_event_id') or None
+    try:
+        from app_analytics.services import link_recording_to_detection
+        link_recording_to_detection(rec, detection_event_id)
+    except Exception:
+        pass
     # If the just-uploaded clip was deleted by retention (edge case), skip notify
     still_exists = Recording.objects.filter(pk=rec.pk).exists()
     if still_exists:

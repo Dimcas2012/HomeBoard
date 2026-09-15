@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+{% block title %}AI Analytics — HomeBoard{% endblock %}
+{% block content %}
+<div class="viewer-shell">
+  <header class="topbar">
+    <div class="brand">Home<span>Board</span></div>
+    <nav>
+      <a href="{% url 'viewer:index' %}">Viewer</a>
+      <a href="{% url 'recordings:list' %}">Записи</a>
+      <a class="active" href="{% url 'analytics:events' %}">AI</a>
+      <a href="{% url 'viewer:settings' %}">Камери</a>
+      <a href="{% url 'integration:telegram' %}">Інтеграції</a>
+      <form method="post" action="{% url 'accounts:logout' %}" style="display:inline">{% csrf_token %}<button class="btn secondary" type="submit" style="padding:.35rem .7rem">Вихід</button></form>
+    </nav>
+  </header>
+
+  <div class="recordings-page">
+    <h2>AI-аналітика</h2>
+    <p class="muted" id="aiStatus">Worker / модель: перевірка…</p>
+
+    <div class="integ-card" style="margin:1rem 0 1.5rem;max-width:860px">
+      <strong>Налаштування камери</strong>
+      <div class="row" style="gap:.75rem;align-items:flex-end;margin:.75rem 0">
+        <label class="motion-field" style="margin:0;flex:1">
+          <span>Камера</span>
+          <select id="aiCamera" class="integ-input">
+            {% for cam in cameras %}
+            <option value="{{ cam.id }}">{{ cam.name }}</option>
+            {% empty %}
+            <option value="">Немає камер</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="ctrl-check" style="margin:0">
+          <input type="checkbox" id="aiEnabled"> Увімкнути AI
+        </label>
+      </div>
+      <label class="ctrl-check" style="margin-bottom:.5rem">
+        <input type="checkbox" id="aiPhoneAssist"> On-device prefilter (телефон)
+      </label>
+      <label class="ctrl-check" style="margin-bottom:.5rem">
+        <input type="checkbox" id="aiSummarize"> AI-опис (Ollama)
+      </label>
+            <div class="motion-field" style="margin-top:.75rem">
+        <div class="row" style="gap:.75rem;align-items:flex-start;flex-wrap:wrap">
+          <label class="motion-field" style="margin:0;flex:1;min-width:180px">
+            <span>Мін. confidence</span>
+            <input id="aiConf" class="integ-input" type="number" min="0.15" max="0.95" step="0.05" value="0.45">
+            <span class="muted motion-hint">
+              Наскільки «впевнена» має бути модель, щоб зарахувати обʼєкт (0–1).
+              Нижче — більше спрацювань і хибних; вище — строгіше.
+              Приклад: <code>0.35</code> ловить людину в тіні; <code>0.70</code> майже лише чіткі обʼєкти.
+            </span>
+          </label>
+          <label class="motion-field" style="margin:0;flex:1;min-width:180px">
+            <span>FPS ingest</span>
+            <input id="aiFps" class="integ-input" type="number" min="0.5" max="2" step="0.5" value="1">
+            <span class="muted motion-hint">
+              Скільки кадрів на секунду камера/worker відправляє на AI (на CPU ліміт ~0.5–2).
+              Вище — швидша реакція, більше навантаження на сервер і трафік.
+              Приклад: <code>0.5</code> ≈ кадр раз на 2 с; <code>2</code> ≈ 2 кадри/с для швидкого руху.
+            </span>
+          </label>
+          <label class="motion-field" style="margin:0;flex:1;min-width:180px">
+            <span>Пауза подій (с)</span>
+            <input id="aiCd" class="integ-input" type="number" min="3" max="300" step="1" value="20">
+            <span class="muted motion-hint">
+              Мінімальний інтервал між новими AI-подіями (Telegram / запис / стрічка).
+              Поки пауза активна, boxes можуть оновлюватись, але новий алерт не створюється.
+              Приклад: людина стоїть 1 хв — при <code>20</code> с буде ~3 події, при <code>60</code> с — одна.
+            </span>
+          </label>
+          <label class="motion-field" style="margin:0;flex:1;min-width:180px">
+            <span>Тригер</span>
+            <select id="aiTrigger" class="integ-input">
+              <option value="motion">Після motion/sound</option>
+              <option value="continuous">Постійно</option>
+            </select>
+            <span class="muted motion-hint">
+              Коли слати кадри на AI.
+              <strong>Після motion/sound</strong> — економія CPU: аналіз лише після руху/звуку (типовий дім).
+              <strong>Постійно</strong> — кадри йдуть завжди з частотою FPS (краще, якщо обʼєкт зʼявляється без явного motion).
+              Приклад: нічний двір без вітру → continuous; жвава кімната → motion/sound.
+            </span>
+          </label>
+        </div>
+      </div>
+      <div class="motion-field">
+        <div class="row" style="justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap">
+          <span>Класи для детекції <span class="muted" id="aiClassCount"></span></span>
+          <span class="row" style="gap:.35rem">
+            <button class="btn secondary" type="button" id="aiClassesRecommended">Рекомендовані</button>
+            <button class="btn secondary" type="button" id="aiClassesAll">Усі</button>
+            <button class="btn secondary" type="button" id="aiClassesNone">Жодного</button>
+          </span>
+        </div>
+        <input id="aiClassFilter" class="integ-input" type="search" placeholder="Пошук класу…" style="margin:.5rem 0">
+        <div id="aiClassGrid" class="ai-class-grid" aria-label="Класи YOLO/COCO"></div>
+        <span class="muted motion-hint">Повний список COCO (80 класів). Увімкніть потрібні — їх можна додавати/прибирати кліком.</span>
+      </div>
+      <div class="motion-field">
+        <span>Зони інтересу (як Motion 4×3)</span>
+        <div id="aiZones" class="motion-sector-grid" style="margin-top:.35rem"></div>
+      </div>
+      <div class="row" style="margin-top:.75rem">
+        <button class="btn" type="button" id="aiSave">Зберегти</button>
+        <span class="muted" id="aiSaveMsg"></span>
+      </div>
+    </div>
+
+    <div class="row" style="gap:.75rem;align-items:flex-end;margin-bottom:1rem;flex-wrap:wrap">
+      <label class="motion-field" style="margin:0">
+        <span>Фільтр класу</span>
+        <input id="filterClass" class="integ-input" type="text" placeholder="person">
+      </label>
+      <label class="motion-field" style="margin:0">
+        <span>Пошук</span>
+        <input id="filterQ" class="integ-input" type="text" placeholder="текст опису">
+      </label>
+      <button class="btn secondary" type="button" id="btnReload">Оновити</button>
+    </div>
+
+    <div id="eventsList" class="card-list"></div>
+  </div>
+</div>
+<script>
+(() => {
+  const el = (id) => document.getElementById(id);
+  const csrf = '{{ csrf_token }}';
+  let zones = Array(12).fill(true);
+  let availableClasses = [];
+  let defaultClasses = ['person', 'car', 'truck', 'bus', 'motorcycle', 'bicycle', 'dog', 'cat'];
+  let selectedClasses = new Set(defaultClasses);
+
+  function renderZones() {
+    const box = el('aiZones');
+    if (!box) return;
+    box.innerHTML = '';
+    zones.forEach((on, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = String(i + 1);
+      b.classList.toggle('on', !!on);
+      b.addEventListener('click', () => {
+        zones[i] = !zones[i];
+        renderZones();
+      });
+      box.appendChild(b);
+    });
+  }
+
+  function updateClassCount() {
+    const n = selectedClasses.size;
+    const total = availableClasses.length || 80;
+    if (el('aiClassCount')) el('aiClassCount').textContent = `(${n}/${total})`;
+  }
+
+  function renderClassGrid() {
+    const grid = el('aiClassGrid');
+    if (!grid) return;
+    const q = (el('aiClassFilter')?.value || '').trim().toLowerCase();
+    grid.innerHTML = '';
+    availableClasses.forEach((name) => {
+      const label = document.createElement('label');
+      const on = selectedClasses.has(name);
+      label.classList.toggle('on', on);
+      if (q && !name.toLowerCase().includes(q)) label.classList.add('hidden');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = on;
+      input.value = name;
+      input.addEventListener('change', () => {
+        if (input.checked) selectedClasses.add(name);
+        else selectedClasses.delete(name);
+        label.classList.toggle('on', input.checked);
+        updateClassCount();
+      });
+      const span = document.createElement('span');
+      span.textContent = name;
+      label.appendChild(input);
+      label.appendChild(span);
+      grid.appendChild(label);
+    });
+    updateClassCount();
+  }
+
+  function setSelectedClasses(list) {
+    selectedClasses = new Set((list || []).map((c) => String(c).toLowerCase()));
+    renderClassGrid();
+  }
+
+  async function loadStatus() {
+    try {
+      const res = await fetch('/analytics/api/status/');
+      const data = await res.json();
+      const m = data.model || {};
+      el('aiStatus').textContent =
+        `Модель: ${m.loaded ? 'завантажена' : ('очікує worker · ' + (m.error || '—'))}` +
+        ` · Ollama: ${data.ollama ? 'онлайн' : 'немає'}` +
+        ` · черга: ${data.pending_jobs || 0}`;
+    } catch {
+      el('aiStatus').textContent = 'Статус недоступний';
+    }
+  }
+
+  async function loadSettings() {
+    const id = el('aiCamera').value;
+    if (!id) return;
+    const res = await fetch(`/analytics/api/cameras/${id}/settings/`);
+    if (!res.ok) {
+      if (el('aiSaveMsg')) el('aiSaveMsg').textContent = 'Не вдалося завантажити налаштування';
+      return;
+    }
+    const s = await res.json();
+    el('aiEnabled').checked = !!s.enabled;
+    el('aiPhoneAssist').checked = !!s.phone_assist;
+    el('aiSummarize').checked = !!s.summarize;
+    if (el('aiConf')) el('aiConf').value = s.min_confidence ?? 0.45;
+    if (el('aiFps')) el('aiFps').value = s.fps ?? 1;
+    if (el('aiCd')) el('aiCd').value = s.cooldown_sec ?? 20;
+    if (el('aiTrigger')) el('aiTrigger').value = s.trigger_mode || 'motion';
+    if (Array.isArray(s.available_classes) && s.available_classes.length) {
+      availableClasses = s.available_classes.map((c) => String(c).toLowerCase());
+    }
+    if (Array.isArray(s.default_classes) && s.default_classes.length) {
+      defaultClasses = s.default_classes.map((c) => String(c).toLowerCase());
+    }
+    setSelectedClasses(s.classes || defaultClasses);
+    zones = Array.isArray(s.zones) ? s.zones.slice(0, 12) : Array(12).fill(true);
+    while (zones.length < 12) zones.push(true);
+    renderZones();
+  }
+
+  async function saveSettings() {
+    const id = el('aiCamera').value;
+    if (!id) return;
+    el('aiSaveMsg').textContent = 'Збереження…';
+    const body = {
+      enabled: el('aiEnabled').checked,
+      phone_assist: el('aiPhoneAssist').checked,
+      summarize: el('aiSummarize').checked,
+      min_confidence: Number(el('aiConf')?.value),
+      fps: Number(el('aiFps')?.value),
+      cooldown_sec: Number(el('aiCd')?.value),
+      trigger_mode: el('aiTrigger')?.value,
+      classes: [...selectedClasses],
+      zones,
+    };
+    try {
+      const res = await fetch(`/analytics/api/cameras/${id}/settings/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrf,
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        el('aiSaveMsg').textContent = `Помилка ${res.status}`;
+        return;
+      }
+      el('aiSaveMsg').textContent = 'Збережено';
+      await loadSettings();
+      await loadStatus();
+    } catch (err) {
+      el('aiSaveMsg').textContent = 'Помилка мережі';
+      console.warn(err);
+    }
+  }
+
+  async function loadEvents() {
+    const params = new URLSearchParams();
+    const cam = el('aiCamera').value;
+    const cls = el('filterClass').value.trim();
+    const q = el('filterQ').value.trim();
+    if (cam) params.set('camera_id', cam);
+    if (cls) params.set('class', cls);
+    if (q) params.set('q', q);
+    const res = await fetch('/analytics/api/events/?' + params.toString());
+    const data = await res.json();
+    const list = el('eventsList');
+    list.innerHTML = '';
+    if (!data.events?.length) {
+      list.innerHTML = '<div class="empty muted">Подій ще немає. Увімкніть AI і запустіть камеру.</div>';
+      return;
+    }
+    data.events.forEach((e) => {
+      const item = document.createElement('div');
+      item.className = 'card-list-item';
+      item.style.cssText = 'display:flex;gap:.75rem;align-items:flex-start;padding:.75rem 0;border-bottom:1px solid var(--line)';
+      const img = e.thumbnail
+        ? `<img src="${e.thumbnail}" alt="" style="width:120px;height:72px;object-fit:cover;border-radius:8px">`
+        : '<div style="width:120px;height:72px;background:#111;border-radius:8px"></div>';
+      item.innerHTML = `
+        ${img}
+        <div style="flex:1;min-width:0">
+          <strong>${e.camera_name}</strong>
+          <div class="muted" style="font-size:.85rem">${new Date(e.started_at).toLocaleString('uk-UA')} · ${(e.classes||[]).join(', ')} · score ${(e.score||0).toFixed(2)}</div>
+          <div style="margin-top:.25rem">${e.summary || ''}</div>
+          ${e.recording_url ? `<a href="${e.recording_url}" target="_blank" rel="noopener">Кліп</a>` : ''}
+        </div>`;
+      list.appendChild(item);
+    });
+  }
+
+  el('aiCamera')?.addEventListener('change', () => { loadSettings(); loadEvents(); });
+  el('aiSave')?.addEventListener('click', saveSettings);
+  el('btnReload')?.addEventListener('click', () => { loadEvents(); loadStatus(); });
+  el('aiClassFilter')?.addEventListener('input', renderClassGrid);
+  el('aiClassesRecommended')?.addEventListener('click', () => setSelectedClasses(defaultClasses));
+  el('aiClassesAll')?.addEventListener('click', () => setSelectedClasses(availableClasses));
+  el('aiClassesNone')?.addEventListener('click', () => setSelectedClasses([]));
+  renderZones();
+  loadStatus();
+  loadSettings();
+  loadEvents();
+  setInterval(loadStatus, 15000);
+})();
+</script>
+{% endblock %}

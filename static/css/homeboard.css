@@ -115,13 +115,20 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
-  isolation: isolate;
-  contain: layout paint style;
+  isolation: auto;
+  contain: none;
   min-width: 0;
-  min-height: 0;
+  min-height: 160px;
   aspect-ratio: 16 / 10;
   cursor: pointer;
   z-index: 1;
+}
+@supports not (aspect-ratio: 16 / 10) {
+  .tile::before {
+    content: "";
+    display: block;
+    padding-top: 62.5%;
+  }
 }
 .tile video,
 .tile .placeholder {
@@ -136,6 +143,10 @@ a:hover { text-decoration: underline; }
   max-width: 100%;
   max-height: 100%;
 }
+.tile video {
+  z-index: 0;
+  pointer-events: none;
+}
 .tile .placeholder {
   display: grid;
   place-items: center;
@@ -143,6 +154,149 @@ a:hover { text-decoration: underline; }
   font-size: .95rem;
   z-index: 1;
   pointer-events: none;
+}
+.tile .placeholder[hidden] {
+  display: none !important;
+}
+/* Mobile WebKit: contain:paint / overflow+radius on the tile blanks WebRTC
+   video frames while the audio track still plays. */
+@supports (-webkit-touch-callout: none) {
+  .tile {
+    overflow: visible;
+    border-radius: 12px;
+  }
+  .tile video {
+    object-fit: contain;
+    border-radius: 12px;
+  }
+}
+.tile-noise {
+  position: absolute;
+  left: .55rem;
+  right: .55rem;
+  bottom: 2.55rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  padding: .28rem .4rem;
+  border-radius: 8px;
+  background: rgba(5, 8, 12, .72);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  font-size: .72rem;
+  color: #d7e2f0;
+}
+.tile-noise[hidden] { display: none !important; }
+.tile-noise-label {
+  flex: 0 0 auto;
+  min-width: 4.6rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+}
+.tile-noise-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.14);
+  overflow: hidden;
+  position: relative;
+}
+.tile-noise-bar > i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3dd6c6, #7dffb3);
+  transition: width .12s linear, background .2s ease;
+}
+.tile-noise.hot .tile-noise-bar > i {
+  background: linear-gradient(90deg, #ffb020, #ff5d5d);
+}
+.tile-noise.missing {
+  opacity: .72;
+}
+.tile-detect {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.tile-detect span {
+  position: absolute;
+  border: 2px solid #7dffb3;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.35);
+}
+.tile-detect span em {
+  position: absolute;
+  left: 0;
+  top: -1.15rem;
+  font-style: normal;
+  font-size: .68rem;
+  background: rgba(0,0,0,.75);
+  color: #7dffb3;
+  padding: .05rem .3rem;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.tile-detect-badge {
+  position: absolute;
+  top: .55rem;
+  right: .55rem;
+  z-index: 2;
+  background: rgba(0,0,0,.72);
+  color: #7dffb3;
+  font-size: .72rem;
+  padding: .2rem .45rem;
+  border-radius: 999px;
+  pointer-events: none;
+}
+.ctrl-noise {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  margin: .2rem 0 .35rem;
+}
+.ctrl-noise .tile-noise-bar {
+  height: 8px;
+}
+.ctrl-noise.hot .tile-noise-bar > i {
+  background: linear-gradient(90deg, #ffb020, #ff5d5d);
+}
+.ctrl-noise[hidden] { display: none !important; }
+.ai-class-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: .35rem;
+  max-height: 260px;
+  overflow: auto;
+  padding: .5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0,0,0,.18);
+}
+.ai-class-grid label {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  margin: 0;
+  padding: .25rem .4rem;
+  border-radius: 6px;
+  font-size: .82rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+.ai-class-grid label:hover {
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+}
+.ai-class-grid label.on {
+  color: var(--text);
+  background: rgba(61, 214, 198, .12);
+}
+.ai-class-grid label.hidden {
+  display: none;
 }
 .tile-meta {
   position: absolute;
@@ -355,12 +509,21 @@ a:hover { text-decoration: underline; }
   min-height: 60vh;
 }
 .preview-wrap video,
-.preview-wrap canvas {
+.preview-wrap canvas:not(.ai-overlay) {
   width: 100%;
   height: min(70vh, 720px);
   object-fit: cover;
   background: #000;
   display: block;
+}
+.preview-wrap .ai-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 4;
+  background: transparent;
 }
 .preview-wrap video.mirror {
   transform: scaleX(-1);

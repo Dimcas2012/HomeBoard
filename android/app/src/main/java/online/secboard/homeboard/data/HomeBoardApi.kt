@@ -46,4 +46,26 @@ class HomeBoardApi(
             )
         }
     }
+
+    fun analyticsSettings(serverUrl: String, cameraId: String, token: String): JSONObject {
+        val base = serverUrl.trimEnd('/')
+        val request = Request.Builder()
+            .url("$base/analytics/api/device/settings/")
+            .get()
+            .header("Accept", "application/json")
+            .header("X-Camera-Id", cameraId)
+            .header("X-Device-Token", token)
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            val json = runCatching { JSONObject(text) }.getOrNull()
+                ?: throw IllegalStateException("Порожня відповідь AI")
+            if (!response.isSuccessful) {
+                val err = json.optString("error").ifBlank { "HTTP ${response.code}" }
+                throw IllegalStateException(err)
+            }
+            return json
+        }
+    }
 }

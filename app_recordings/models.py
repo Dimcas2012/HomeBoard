@@ -56,6 +56,7 @@ class Recording(models.Model):
     class Trigger(models.TextChoices):
         MANUAL = 'manual', 'Manual'
         MOTION = 'motion', 'Motion'
+        DETECTION = 'detection', 'AI Detection'
         CONTINUOUS = 'continuous', 'Continuous'
 
     camera = models.ForeignKey(

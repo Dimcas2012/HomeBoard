@@ -6,3 +6,9 @@ channels-redis==4.3.0
 daphne==4.2.3
 redis==8.1.0
 Pillow==12.3.0
+# AI analytics (install torch from CPU index first):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   pip install ultralytics opencv-python-headless
+ultralytics>=8.3.0
+opencv-python-headless>=4.10.0,<4.11
+numpy>=2.0.0

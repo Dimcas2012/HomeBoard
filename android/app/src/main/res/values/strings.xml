@@ -6,6 +6,9 @@
     <string name="connect">Підключити</string>
     <string name="open_camera">Відкрити камеру</string>
     <string name="permission_required">Потрібні доступ до камери та мікрофона</string>
-    <string name="pair_help">Створіть код у веб-кабінеті (Камери) і введіть тут.</string>
+    <string name="pair_help">Створіть код у веб-кабінеті (Камери) і введіть тут. AI-аналітику вмикайте на сторінці AI після підключення камери.</string>
+    <string name="ai_badge">AI</string>
+    <string name="ai_phone">AI·phone</string>
+    <string name="ai_eco_hint">AI працює у фоні</string>
     <string name="default_server">https://homeboard.secboard.online</string>
 </resources>

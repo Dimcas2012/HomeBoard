@@ -12,8 +12,98 @@
   const cameraState = new Map();
   const watchTimers = new Map();
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const SOUND_KEY = 'homeboard_viewer_sound';
+  let wantSound = localStorage.getItem(SOUND_KEY) !== '0';
   let selectedCameraId = null;
   let ws;
+
+  function unlockAudio() {
+    try {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (_) { /* ignore */ }
+  }
+
+  function syncSoundButtons() {
+    const top = document.getElementById('btnViewerSound');
+    if (top) {
+      top.textContent = wantSound ? '🔊 Звук' : '🔇 Без звуку';
+      top.classList.toggle('on', wantSound);
+    }
+    document.querySelectorAll('.tile-controls button[data-act="sound"]').forEach((btn) => {
+      btn.textContent = wantSound ? '🔊' : '🔇';
+      btn.classList.toggle('on', wantSound);
+      btn.title = wantSound ? 'Вимкнути звук' : 'Увімкнути звук';
+    });
+  }
+
+  function applyTileSound(video) {
+    if (!video) return;
+    video.muted = !wantSound;
+    video.volume = 1;
+  }
+
+  function playTileVideo(video) {
+    if (!video) return;
+    window.HomeBoardWebRTC?.prepareVideoEl?.(video);
+    const start = () => {
+      const want = wantSound;
+      // Mobile browsers autoplay video only while muted; unmute after playback starts.
+      video.muted = true;
+      const p = video.play();
+      if (p && p.then) {
+        p.then(() => {
+          if (want) applyTileSound(video);
+        }).catch(() => {
+          video.muted = true;
+          video.play().catch(() => {});
+          if (want) toast('Натисніть 🔊 щоб увімкнути звук');
+        });
+      }
+    };
+    if (video.readyState >= 1) start();
+    else video.addEventListener('loadedmetadata', start, { once: true });
+  }
+
+  function setViewerSound(on, { toastMsg = true } = {}) {
+    wantSound = !!on;
+    localStorage.setItem(SOUND_KEY, wantSound ? '1' : '0');
+    if (wantSound) unlockAudio();
+    document.querySelectorAll('.tile video').forEach((video) => {
+      applyTileSound(video);
+      if (wantSound && video.srcObject) {
+        video.play().catch(() => {
+          video.muted = true;
+          video.play().catch(() => {});
+        });
+      }
+    });
+    syncSoundButtons();
+    if (toastMsg) toast(wantSound ? 'Звук увімкнено' : 'Звук вимкнено');
+  }
+
+  function attachRemoteMedia(cameraId, ev) {
+    const t = tile(cameraId);
+    if (!t) return;
+    const video = t.querySelector('video');
+    if (!video) return;
+
+    window.HomeBoardWebRTC?.prepareVideoEl?.(video);
+    const merge = window.HomeBoardWebRTC?.streamFromTrackEvent;
+    const stream = merge
+      ? merge(ev, video.srcObject)
+      : (ev.streams && ev.streams[0]) || video.srcObject || new MediaStream([ev.track].filter(Boolean));
+    // New MediaStream identity so Safari/iOS paints a video track added after audio.
+    video.srcObject = stream;
+    if (ev.track?.kind === 'video') ev.track.enabled = true;
+    setPlaceholder(t, null, true);
+    t.querySelector('.dot')?.classList.add('on');
+    playTileVideo(video);
+    const entry = peers.get(cameraId);
+    if (entry?.watchTimer) {
+      clearTimeout(entry.watchTimer);
+      entry.watchTimer = null;
+    }
+  }
 
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -116,13 +206,27 @@
 
     const ms = state.motion_settings || {};
     const sens = drawer.querySelector('input[data-act="motion_sensitivity"]');
+    const soundOn = drawer.querySelector('input[data-act="motion_sound_enabled"]');
+    const soundSens = drawer.querySelector('input[data-act="motion_sound_sensitivity"]');
     const cd = drawer.querySelector('input[data-act="motion_cooldown"]');
     if (sens && ms.sensitivity != null) sens.value = String(ms.sensitivity);
+    if (soundOn) soundOn.checked = !!ms.sound_enabled;
+    if (soundSens && ms.sound_sensitivity != null) soundSens.value = String(ms.sound_sensitivity);
+    if (soundSens) soundSens.disabled = !ms.sound_enabled;
     if (cd && ms.cooldown_sec != null) cd.value = String(ms.cooldown_sec);
     const sensLabel = document.getElementById('ctrlSensLabel');
+    const soundSensLabel = document.getElementById('ctrlSoundSensLabel');
     const cdLabel = document.getElementById('ctrlCdLabel');
     if (sensLabel && ms.sensitivity != null) sensLabel.textContent = String(ms.sensitivity);
+    if (soundSensLabel && ms.sound_sensitivity != null) soundSensLabel.textContent = String(ms.sound_sensitivity);
     if (cdLabel && ms.cooldown_sec != null) cdLabel.textContent = String(ms.cooldown_sec);
+    if (ms.sound_level != null || ms.sound_threshold != null) {
+      updateCtrlSoundLive({
+        level: Number(ms.sound_level) || 0,
+        threshold: Number(ms.sound_threshold) || 0.1,
+        available: ms.sound_level != null,
+      });
+    }
     renderCtrlSectors(Array.isArray(ms.sectors) ? ms.sectors : null);
     applyCtrlSchedule(ms.schedule || null, ms);
 
@@ -130,7 +234,8 @@
       state.streaming ? 'Streaming' : 'Idle',
       state.native ? 'Android app' : 'Browser',
       state.online === false ? 'offline' : 'online',
-      ms.sensitivity != null ? `motion ${ms.sensitivity}/10` : null,
+      ms.sensitivity != null ? `video ${ms.sensitivity}/10` : null,
+      ms.sound_enabled ? `sound ${ms.sound_sensitivity || 6}/10` : null,
       ms.schedule?.enabled
         ? (ms.schedule_active ? 'розклад ✓' : 'поза розкладом')
         : null,
@@ -273,11 +378,146 @@
     el.querySelectorAll('.tile-controls button[data-act="eco"]').forEach((b) => {
       b.classList.toggle('on', !!state.eco);
     });
+    const ms = state.motion_settings || {};
+    if (ms.sound_level != null) {
+      setTileNoise(cameraId, {
+        level: Number(ms.sound_level) || 0,
+        threshold: Number(ms.sound_threshold) || 0.1,
+        available: true,
+      });
+    }
     if (selectedCameraId === cameraId) applyStateToDrawer(state);
+  }
+
+  function ensureDetectUi(el) {
+    if (!el) return null;
+    let layer = el.querySelector('.tile-detect');
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.className = 'tile-detect';
+      el.insertBefore(layer, el.querySelector('.tile-controls') || el.querySelector('.tile-meta'));
+    }
+    let badge = el.querySelector('.tile-detect-badge');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.className = 'tile-detect-badge';
+      badge.hidden = true;
+      el.appendChild(badge);
+    }
+    return { layer, badge };
+  }
+
+  function showDetectionBoxes(cameraId, msg) {
+    const el = tile(cameraId);
+    if (!el) return;
+    const ui = ensureDetectUi(el);
+    const video = el.querySelector('video');
+    const boxes = Array.isArray(msg.boxes) ? msg.boxes : [];
+    const srcW = Number(msg.width) || video?.videoWidth || 1;
+    const srcH = Number(msg.height) || video?.videoHeight || 1;
+    const rect = video?.getBoundingClientRect?.() || el.getBoundingClientRect();
+    const vw = rect.width || 1;
+    const vh = rect.height || 1;
+    ui.layer.innerHTML = '';
+    boxes.forEach((b) => {
+      const xy = b.xyxy || [];
+      if (xy.length < 4) return;
+      const [x1, y1, x2, y2] = xy.map(Number);
+      const span = document.createElement('span');
+      span.style.left = `${(x1 / srcW) * 100}%`;
+      span.style.top = `${(y1 / srcH) * 100}%`;
+      span.style.width = `${((x2 - x1) / srcW) * 100}%`;
+      span.style.height = `${((y2 - y1) / srcH) * 100}%`;
+      const em = document.createElement('em');
+      em.textContent = `${b.cls || 'obj'}${b.track_id != null ? '#' + b.track_id : ''}`;
+      span.appendChild(em);
+      ui.layer.appendChild(span);
+    });
+    const classes = Array.isArray(msg.classes) && msg.classes.length
+      ? msg.classes
+      : [...new Set(boxes.map((b) => b.cls).filter(Boolean))];
+    if (classes.length) {
+      ui.badge.hidden = false;
+      ui.badge.textContent = classes.join(', ');
+    } else if (!msg.live) {
+      ui.badge.hidden = true;
+    }
+    clearTimeout(el._detectTimer);
+    el._detectTimer = setTimeout(() => {
+      if (ui.layer) ui.layer.innerHTML = '';
+      if (msg.live && ui.badge) ui.badge.hidden = true;
+    }, msg.live ? 1200 : 8000);
+  }
+
+  function ensureNoiseUi(el) {
+    if (!el) return null;
+    let box = el.querySelector('.tile-noise');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'tile-noise';
+      box.hidden = true;
+      box.innerHTML = `
+        <span class="tile-noise-label">Шум —</span>
+        <span class="tile-noise-bar" aria-hidden="true"><i></i></span>`;
+      const meta = el.querySelector('.tile-meta');
+      if (meta) el.insertBefore(box, meta);
+      else el.appendChild(box);
+    }
+    return box;
+  }
+
+  function setTileNoise(cameraId, { level = 0, threshold = 0.1, available = true } = {}) {
+    const el = tile(cameraId);
+    if (!el) return;
+    const box = ensureNoiseUi(el);
+    if (!box) return;
+    box.hidden = false;
+    const rms = Math.max(0, Number(level) || 0);
+    const thr = Math.max(0.01, Number(threshold) || 0.1);
+    // Map typical mic RMS (~0..0.35) to bar width.
+    const pct = Math.max(0, Math.min(100, Math.round((rms / 0.28) * 100)));
+    const label = box.querySelector('.tile-noise-label');
+    const fill = box.querySelector('.tile-noise-bar > i');
+    if (label) {
+      label.textContent = available
+        ? `Шум ${Math.round(rms * 100)}`
+        : 'Шум н/д';
+    }
+    if (fill) fill.style.width = available ? `${pct}%` : '0%';
+    box.classList.toggle('hot', available && rms >= thr);
+    box.classList.toggle('missing', !available);
+    box.title = available
+      ? `Рівень шуму ${rms.toFixed(3)} (поріг ${thr.toFixed(3)})`
+      : 'Немає аудіо з камери';
+
+    if (selectedCameraId && String(selectedCameraId) === String(cameraId)) {
+      updateCtrlSoundLive({ level: rms, threshold: thr, available });
+    }
+  }
+
+  function updateCtrlSoundLive({ level = 0, threshold = 0.1, available = true } = {}) {
+    const live = document.getElementById('ctrlSoundLiveLevel');
+    const meter = document.getElementById('ctrlNoiseMeter');
+    const fill = document.getElementById('ctrlNoiseFill');
+    const hint = document.getElementById('ctrlNoiseHint');
+    const rms = Math.max(0, Number(level) || 0);
+    const thr = Math.max(0.01, Number(threshold) || 0.1);
+    const pct = Math.max(0, Math.min(100, Math.round((rms / 0.28) * 100)));
+    const score = Math.round(rms * 100);
+    if (live) live.textContent = available ? String(score) : 'н/д';
+    if (meter) meter.hidden = false;
+    if (fill) fill.style.width = available ? `${pct}%` : '0%';
+    if (meter) meter.classList.toggle('hot', available && rms >= thr);
+    if (hint) {
+      hint.textContent = available
+        ? `live ${rms.toFixed(3)} / поріг ${thr.toFixed(3)}`
+        : 'немає аудіо з камери';
+    }
   }
 
   function controlsHtml(id) {
     return `<div class="tile-controls" data-controls-for="${id}">
+      <button type="button" data-act="sound" title="Звук">🔊</button>
       <button type="button" data-act="panel" title="Налаштування">⚙</button>
       <button type="button" data-act="flip" title="Перемкнути камеру">⇄</button>
       <button type="button" data-act="torch" title="Ліхтарик">🔦</button>
@@ -348,11 +588,15 @@
     el.dataset.source = cam.source_type || 'browser';
     el.dataset.whep = cam.webrtc_play_url || '';
     el.innerHTML = `
-      <video autoplay playsinline muted></video>
+      <video autoplay playsinline webkit-playsinline muted></video>
       <div class="placeholder">Офлайн</div>
       <div class="tile-sectors" aria-hidden="true"></div>
       <div class="tile-sectors-label" hidden></div>
       ${controlsHtml(id)}
+      <div class="tile-noise" hidden>
+        <span class="tile-noise-label">Шум —</span>
+        <span class="tile-noise-bar" aria-hidden="true"><i></i></span>
+      </div>
       <div class="tile-meta">
         <span><span class="dot"></span>${cam.name || 'Camera'}</span>
         <span class="muted cam-state">${cam.source_type || 'browser'}</span>
@@ -360,6 +604,8 @@
     grid.querySelector('.empty')?.remove();
     grid.appendChild(el);
     ensureSectorUi(el);
+    ensureNoiseUi(el);
+    ensureDetectUi(el);
     bindTile(el);
     return el;
   }
@@ -367,15 +613,22 @@
   async function playWhep(el) {
     const url = el.dataset.whep;
     if (!url) return;
-    const video = el.querySelector('video');
     const pc = new RTCPeerConnection(ICE);
     pc.addTransceiver('video', { direction: 'recvonly' });
     pc.addTransceiver('audio', { direction: 'recvonly' });
+    window.HomeBoardWebRTC?.preferH264?.(pc);
     pc.ontrack = (ev) => {
-      video.srcObject = ev.streams[0];
+      const video = el.querySelector('video');
+      window.HomeBoardWebRTC?.prepareVideoEl?.(video);
+      const merge = window.HomeBoardWebRTC?.streamFromTrackEvent;
+      const stream = merge
+        ? merge(ev, video.srcObject)
+        : (ev.streams && ev.streams[0]) || video.srcObject || new MediaStream([ev.track].filter(Boolean));
+      video.srcObject = stream;
+      if (ev.track?.kind === 'video') ev.track.enabled = true;
       setPlaceholder(el, null, true);
       el.querySelector('.dot').classList.add('on');
-      video.play().catch(() => {});
+      playTileVideo(video);
     };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -423,18 +676,7 @@
     const pc = new RTCPeerConnection(ICE);
 
     pc.ontrack = (ev) => {
-      const t = tile(cameraId);
-      if (!t) return;
-      const video = t.querySelector('video');
-      video.srcObject = ev.streams[0] || new MediaStream([ev.track]);
-      setPlaceholder(t, null, true);
-      t.querySelector('.dot').classList.add('on');
-      video.play().catch(() => {});
-      const entry = peers.get(cameraId);
-      if (entry?.watchTimer) {
-        clearTimeout(entry.watchTimer);
-        entry.watchTimer = null;
-      }
+      attachRemoteMedia(cameraId, ev);
     };
 
     pc.onconnectionstatechange = () => {
@@ -489,6 +731,10 @@
   }
 
   function handleTileAction(cameraId, act, el) {
+    if (act === 'sound') {
+      setViewerSound(!wantSound);
+      return;
+    }
     if (act === 'panel') {
       openDrawer(cameraId);
       return;
@@ -513,6 +759,7 @@
   }
 
   function bindTile(el) {
+    window.HomeBoardWebRTC?.prepareVideoEl?.(el.querySelector('video'));
     el.querySelector('.tile-controls')?.addEventListener('click', (ev) => {
       const btn = ev.target.closest('button[data-act]');
       if (!btn) return;
@@ -534,8 +781,29 @@
 
   grid.querySelectorAll('.tile').forEach((el) => {
     ensureSectorUi(el);
+    ensureNoiseUi(el);
+    ensureDetectUi(el);
     bindTile(el);
+    applyTileSound(el.querySelector('video'));
+    window.HomeBoardWebRTC?.prepareVideoEl?.(el.querySelector('video'));
   });
+
+  document.getElementById('btnViewerSound')?.addEventListener('click', () => {
+    setViewerSound(!wantSound);
+  });
+  document.addEventListener('pointerdown', () => {
+    unlockAudio();
+    if (wantSound) {
+      document.querySelectorAll('.tile video').forEach((video) => {
+        if (!video.srcObject) return;
+        if (video.muted) {
+          video.muted = false;
+          video.play().catch(() => {});
+        }
+      });
+    }
+  }, { once: true, capture: true });
+  syncSoundButtons();
 
   drawer.addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-act]');
@@ -572,6 +840,9 @@
     if (input.dataset.act === 'motion_sensitivity') {
       document.getElementById('ctrlSensLabel').textContent = input.value;
     }
+    if (input.dataset.act === 'motion_sound_sensitivity') {
+      document.getElementById('ctrlSoundSensLabel').textContent = input.value;
+    }
     if (input.dataset.act === 'motion_cooldown') {
       document.getElementById('ctrlCdLabel').textContent = input.value;
     }
@@ -582,6 +853,14 @@
     if (!input || !selectedCameraId) return;
     if (input.dataset.act === 'motion_sensitivity') {
       sendControl(selectedCameraId, 'motion_sensitivity', Number(input.value));
+    }
+    if (input.dataset.act === 'motion_sound_enabled') {
+      const soundSens = drawer.querySelector('input[data-act="motion_sound_sensitivity"]');
+      if (soundSens) soundSens.disabled = !input.checked;
+      sendControl(selectedCameraId, 'motion_sound_enabled', input.checked);
+    }
+    if (input.dataset.act === 'motion_sound_sensitivity') {
+      sendControl(selectedCameraId, 'motion_sound_sensitivity', Number(input.value));
     }
     if (input.dataset.act === 'motion_cooldown') {
       sendControl(selectedCameraId, 'motion_cooldown', Number(input.value));
@@ -681,6 +960,7 @@
       if (!entry) return;
       try {
         await entry.pc.setRemoteDescription(msg.sdp);
+        window.HomeBoardWebRTC?.preferH264?.(entry.pc);
         const answer = await entry.pc.createAnswer();
         await entry.pc.setLocalDescription(answer);
         ws.send(JSON.stringify({
@@ -712,19 +992,41 @@
       return;
     }
 
+    if (msg.type === 'sound_level') {
+      setTileNoise(msg.camera_id, {
+        level: msg.level,
+        threshold: msg.threshold,
+        available: msg.available !== false,
+      });
+      return;
+    }
+
+    if (msg.type === 'detection') {
+      showDetectionBoxes(msg.camera_id, msg);
+      if (!msg.live) {
+        beep();
+        const classes = (msg.classes || []).join(', ') || 'object';
+        toast(`AI: ${msg.camera_name || msg.camera_id} · ${classes}`);
+      }
+      return;
+    }
+
     if (msg.type === 'motion') {
       beep();
       const sectors = Array.isArray(msg.sectors) ? msg.sectors : [];
       const nums = sectors.map((n) => Number(n) + 1).filter((n) => n >= 1);
+      const isSound = msg.source === 'sound';
       toast(
-        nums.length
-          ? `Рух: ${msg.camera_name || msg.camera_id} · сектори ${nums.join(', ')}`
-          : `Рух: ${msg.camera_name || msg.camera_id}`,
+        isSound
+          ? `Звук: ${msg.camera_name || msg.camera_id}`
+          : (nums.length
+            ? `Рух: ${msg.camera_name || msg.camera_id} · сектори ${nums.join(', ')}`
+            : `Рух: ${msg.camera_name || msg.camera_id}`),
       );
       const el = tile(msg.camera_id);
       if (el) {
         el.classList.add('motion');
-        showMotionSectors(el, sectors, { score: msg.score, threshold: msg.threshold });
+        if (!isSound) showMotionSectors(el, sectors, { score: msg.score, threshold: msg.threshold });
         clearTimeout(el._motionOutlineTimer);
         el._motionOutlineTimer = setTimeout(() => el.classList.remove('motion'), 6000);
       }

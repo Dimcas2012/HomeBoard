@@ -7,12 +7,15 @@ import org.json.JSONObject
 class HomeBoardNativeBridge(
     private val economy: EconomyController,
     private val onEcoChanged: (Boolean) -> Unit,
+    private val onAnalytics: (JSONObject) -> Unit = {},
 ) {
     @JavascriptInterface
     fun getCapabilities(): String {
         return JSONObject()
             .put("torch", economy.hasFlash())
             .put("eco", true)
+            .put("analytics", true)
+            .put("phone_detect", false)
             .toString()
     }
 
@@ -32,4 +35,10 @@ class HomeBoardNativeBridge(
 
     @JavascriptInterface
     fun isEcoOn(): Boolean = economy.ecoScreenOn
+
+    @JavascriptInterface
+    fun onAnalyticsStatus(json: String) {
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return
+        onAnalytics(obj)
+    }
 }

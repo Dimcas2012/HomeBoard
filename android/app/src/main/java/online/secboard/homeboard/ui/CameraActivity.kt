@@ -5,12 +5,14 @@ import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -18,7 +20,15 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import online.secboard.homeboard.BuildConfig
 import online.secboard.homeboard.bridge.HomeBoardNativeBridge
+import online.secboard.homeboard.data.HomeBoardApi
 import online.secboard.homeboard.data.Prefs
 import online.secboard.homeboard.databinding.ActivityCameraBinding
 import online.secboard.homeboard.util.EconomyController
@@ -28,8 +38,10 @@ class CameraActivity : AppCompatActivity() {
     private lateinit var binding: ActivityCameraBinding
     private lateinit var prefs: Prefs
     private lateinit var economy: EconomyController
+    private val api = HomeBoardApi()
     private var pendingWebPermission: PermissionRequest? = null
     private var pageReady = false
+    private var analyticsEnabled = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -85,13 +97,20 @@ class CameraActivity : AppCompatActivity() {
 
         setupWebView()
         binding.webView.addJavascriptInterface(
-            HomeBoardNativeBridge(economy) { on ->
-                runOnUiThread {
-                    if (on) enterEconomyMode() else exitEconomyMode()
-                }
-            },
+            HomeBoardNativeBridge(
+                economy,
+                onEcoChanged = { on ->
+                    runOnUiThread {
+                        if (on) enterEconomyMode() else exitEconomyMode()
+                    }
+                },
+                onAnalytics = { json ->
+                    runOnUiThread { applyAnalyticsUi(json) }
+                },
+            ),
             "HomeBoardNative",
         )
+        startAnalyticsPolling()
         val needed = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
             .filter {
                 ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -132,7 +151,12 @@ class CameraActivity : AppCompatActivity() {
         economy.enterEcoScreen(window)
         binding.ecoCover.visibility = View.VISIBLE
         binding.overlay.visibility = View.GONE
-        Toast.makeText(this, "Економ-режим: екран затемнено, стрім працює", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            this,
+            if (analyticsEnabled) "Економ-режим: екран затемнено, стрім і AI працюють"
+            else "Економ-режим: екран затемнено, стрім працює",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     private fun exitEconomyMode() {
@@ -153,7 +177,10 @@ class CameraActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            userAgentString = "$userAgentString HomeBoardAndroid/1.0"
+            userAgentString = "$userAgentString HomeBoardAndroid/${BuildConfig.VERSION_NAME}"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                offscreenPreRaster = true
+            }
         }
 
         WebView.setWebContentsDebuggingEnabled(true)
@@ -194,6 +221,14 @@ class CameraActivity : AppCompatActivity() {
         }
 
         web.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?,
+            ): Boolean {
+                val scheme = request?.url?.scheme?.lowercase()
+                return scheme == "intent" || scheme == "market"
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageReady = true
                 injectCredentialsAndStart(view)
@@ -220,7 +255,46 @@ class CameraActivity : AppCompatActivity() {
     }
 
     private fun loadCameraPage() {
-        binding.webView.loadUrl("${prefs.serverUrl.trimEnd('/')}/camera/?autostart=1")
+        val base = prefs.serverUrl.trimEnd('/')
+        binding.webView.loadUrl(
+            "$base/camera/?autostart=1&app=android&v=${BuildConfig.VERSION_CODE}",
+        )
+    }
+
+    private fun startAnalyticsPolling() {
+        lifecycleScope.launch {
+            while (isActive) {
+                refreshAnalyticsFromServer()
+                delay(20_000)
+            }
+        }
+    }
+
+    private suspend fun refreshAnalyticsFromServer() {
+        val cameraId = prefs.cameraId ?: return
+        val token = prefs.deviceToken ?: return
+        val server = prefs.serverUrl
+        val json = runCatching {
+            withContext(Dispatchers.IO) {
+                api.analyticsSettings(server, cameraId, token)
+            }
+        }.getOrNull() ?: return
+        applyAnalyticsUi(json)
+    }
+
+    private fun applyAnalyticsUi(json: JSONObject) {
+        val enabled = json.optBoolean("enabled", false)
+        val assist = json.optBoolean("phone_assist", false)
+        analyticsEnabled = enabled
+        if (!enabled) {
+            binding.aiBadge.visibility = View.GONE
+            binding.ecoAiHint.visibility = View.GONE
+            return
+        }
+        binding.aiBadge.visibility = View.VISIBLE
+        binding.aiBadge.text = if (assist) getString(online.secboard.homeboard.R.string.ai_phone)
+            else getString(online.secboard.homeboard.R.string.ai_badge)
+        binding.ecoAiHint.visibility = View.VISIBLE
     }
 
     private fun injectCredentialsAndStart(view: WebView?) {

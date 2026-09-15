@@ -11,8 +11,8 @@ android {
         applicationId = "online.secboard.homeboard"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 5
+        versionName = "1.1.0"
         buildConfigField("String", "DEFAULT_SERVER", "\"https://homeboard.secboard.online\"")
     }
 

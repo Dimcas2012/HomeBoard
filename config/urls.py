@@ -15,6 +15,7 @@ urlpatterns = [
     path('motion/', include('app_motion.urls')),
     path('recordings/', include('app_recordings.urls')),
     path('integration/', include('app_integration.urls')),
+    path('analytics/', include('app_analytics.urls')),
 ]
 
 if settings.DEBUG:

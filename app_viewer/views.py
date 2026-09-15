@@ -7,30 +7,14 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
 from app_cameras.models import Camera, PairingCode
-
-
-def _static_bust() -> str:
-    """Query-string version so browsers refetch JS despite nginx immutable cache."""
-    files = [
-        settings.BASE_DIR / 'static' / 'js' / 'viewer.js',
-        settings.BASE_DIR / 'static' / 'js' / 'camera.js',
-        settings.BASE_DIR / 'static' / 'js' / 'webrtc_common.js',
-        settings.BASE_DIR / 'static' / 'js' / 'local_store.js',
-    ]
-    latest = 0
-    for path in files:
-        try:
-            latest = max(latest, int(path.stat().st_mtime))
-        except OSError:
-            pass
-    return str(latest or 1)
+from config.context_processors import static_bust_value
 
 
 def _webrtc_ctx():
     return {
         'mediamtx_webrtc_url': settings.MEDIAMTX_WEBRTC_URL,
         'webrtc_ice_servers_json': json.dumps(settings.WEBRTC_ICE_SERVERS),
-        'static_bust': _static_bust(),
+        'static_bust': static_bust_value(),
     }
 
 

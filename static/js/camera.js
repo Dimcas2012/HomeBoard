@@ -41,6 +41,9 @@
   const motionSectorGrid = document.getElementById('motionSectorGrid');
   const motionOverlay = document.getElementById('motionOverlay');
   const motionSensEl = document.getElementById('motionSensitivity');
+  const motionSoundEnabledEl = document.getElementById('motionSoundEnabled');
+  const motionSoundSensEl = document.getElementById('motionSoundSensitivity');
+  const motionSoundLiveEl = document.getElementById('motionSoundLive');
   const motionCdEl = document.getElementById('motionCooldown');
   const motionIntervalEl = document.getElementById('motionInterval');
   const motionShowOverlayEl = document.getElementById('motionShowOverlay');
@@ -55,6 +58,13 @@
   let ws = null;
   let peers = new Map();
   let motionTimer = null;
+  let soundTimer = null;
+  let soundAudioCtx = null;
+  let soundAnalyser = null;
+  let soundSource = null;
+  let soundData = null;
+  let soundTrackId = null;
+  let lastSoundRms = 0;
   let composeTimer = null;
   let lastFrame = null;
   let recordedChunks = [];
@@ -68,6 +78,17 @@
     jpeg_quality: 0.7,
     max_width: 1280,
   };
+  let analyticsPrefs = {
+    enabled: false,
+    phone_assist: false,
+    trigger_mode: 'motion',
+    fps: 1,
+    classes: ['person', 'car', 'truck', 'bus', 'motorcycle', 'bicycle', 'dog', 'cat'],
+  };
+  let analyticsTimer = null;
+  let lastAnalyticsUploadAt = 0;
+  let lastDetectionEventId = null;
+  let lastPhoneHints = [];
   let facingMode = localStorage.getItem(FACING_KEY) || 'environment';
   let dualMode = localStorage.getItem(DUAL_KEY) === '1';
   let wantLocalLoop = localStorage.getItem(LOCAL_LOOP_KEY) === '1';
@@ -132,6 +153,8 @@
   function defaultMotionSettings() {
     return {
       sensitivity: 6,
+      sound_enabled: false,
+      sound_sensitivity: 6,
       cooldown_sec: 8,
       interval_ms: 400,
       sectors: Array(MOTION_COLS * MOTION_ROWS).fill(true),
@@ -151,6 +174,8 @@
       while (sectors.length < MOTION_COLS * MOTION_ROWS) sectors.push(true);
       return {
         sensitivity: Math.min(10, Math.max(1, Number(raw.sensitivity) || base.sensitivity)),
+        sound_enabled: !!raw.sound_enabled,
+        sound_sensitivity: Math.min(10, Math.max(1, Number(raw.sound_sensitivity) || base.sound_sensitivity)),
         cooldown_sec: Math.min(60, Math.max(3, Number(raw.cooldown_sec) || base.cooldown_sec)),
         interval_ms: Math.min(1000, Math.max(200, Number(raw.interval_ms) || base.interval_ms)),
         sectors,
@@ -169,6 +194,11 @@
   function motionThreshold() {
     // sensitivity 1 → ~43, 6 → ~18, 10 → ~4 (matches old default at ~6)
     return Math.max(4, Math.round(48 - motionSettings.sensitivity * 5));
+  }
+
+  function soundThreshold() {
+    // sensitivity 1 → ~0.20, 6 → ~0.10, 10 → ~0.02 (RMS 0..1)
+    return Math.max(0.02, Number((0.22 - motionSettings.sound_sensitivity * 0.02).toFixed(3)));
   }
 
   function scheduleDayIndex(date = new Date()) {
@@ -235,15 +265,20 @@
   function applyMotionSettingsToUi() {
     if (!motionSettings) return;
     if (motionSensEl) motionSensEl.value = String(motionSettings.sensitivity);
+    if (motionSoundEnabledEl) motionSoundEnabledEl.checked = !!motionSettings.sound_enabled;
+    if (motionSoundSensEl) motionSoundSensEl.value = String(motionSettings.sound_sensitivity);
     if (motionCdEl) motionCdEl.value = String(motionSettings.cooldown_sec);
     if (motionIntervalEl) motionIntervalEl.value = String(motionSettings.interval_ms);
     if (motionShowOverlayEl) motionShowOverlayEl.checked = !!motionSettings.show_overlay;
     const sensLabel = document.getElementById('motionSensLabel');
+    const soundSensLabel = document.getElementById('motionSoundSensLabel');
     const cdLabel = document.getElementById('motionCdLabel');
     const ivLabel = document.getElementById('motionIntervalLabel');
     if (sensLabel) sensLabel.textContent = String(motionSettings.sensitivity);
+    if (soundSensLabel) soundSensLabel.textContent = String(motionSettings.sound_sensitivity);
     if (cdLabel) cdLabel.textContent = String(motionSettings.cooldown_sec);
     if (ivLabel) ivLabel.textContent = String(motionSettings.interval_ms);
+    if (motionSoundSensEl) motionSoundSensEl.disabled = !motionSettings.sound_enabled;
 
     const sch = motionSettings.schedule || defaultSchedule();
     const schEnabled = document.getElementById('motionScheduleEnabled');
@@ -317,6 +352,8 @@
       motionSettings.sectors.push(true);
     }
     motionSettings.sensitivity = Math.min(10, Math.max(1, Number(motionSettings.sensitivity) || 6));
+    motionSettings.sound_enabled = !!motionSettings.sound_enabled;
+    motionSettings.sound_sensitivity = Math.min(10, Math.max(1, Number(motionSettings.sound_sensitivity) || 6));
     motionSettings.cooldown_sec = Math.min(60, Math.max(3, Number(motionSettings.cooldown_sec) || 8));
     motionSettings.interval_ms = Math.min(1000, Math.max(200, Number(motionSettings.interval_ms) || 400));
     saveMotionSettings();
@@ -589,13 +626,13 @@
           // Refresh labels after a successful open
           getVideoInputs({ refresh: true }).catch(() => {});
           return stream;
-        } catch (err) {
-          lastErr = err;
-        }
+      } catch (err) {
+        lastErr = err;
       }
     }
-    throw lastErr || new Error('Не вдалося відкрити камеру');
-  }
+    }
+      throw lastErr || new Error('Не вдалося відкрити камеру');
+    }
 
   function stopStream(stream) {
     stream?.getTracks().forEach((t) => t.stop());
@@ -684,20 +721,59 @@
     tick();
   }
 
+  async function ensureMicOnStream(stream) {
+    if (!stream) return stream;
+    if (stream.getAudioTracks().some((t) => t.readyState === 'live' && t.enabled)) {
+      return stream;
+    }
+    try {
+      const mic = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      mic.getAudioTracks().forEach((t) => {
+        t.enabled = true;
+        stream.addTrack(t);
+      });
+    } catch (err) {
+      console.warn('mic attach failed', err);
+    }
+    return stream;
+  }
+
+  function senderByKind(pc, kind) {
+    const live = pc.getSenders().find((s) => s.track?.kind === kind);
+    if (live) return live;
+    if (kind !== 'audio') return null;
+    // Empty sendonly transceiver reserved for mic (no track yet).
+    const reserved = pc.getTransceivers().find((t) => (
+      t.sender
+      && !t.sender.track
+      && (t.direction === 'sendonly' || t.direction === 'sendrecv')
+    ));
+    return reserved?.sender || null;
+  }
+
   async function publishOutbound(stream) {
     const videoTrack = stream.getVideoTracks()[0];
     if (!videoTrack) throw new Error('Немає відео-доріжки');
 
     localStream = stream;
     for (const pc of peers.values()) {
-      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-      if (sender) {
-        try { await sender.replaceTrack(videoTrack); } catch (err) { console.warn(err); }
+      const videoSender = senderByKind(pc, 'video');
+      if (videoSender) {
+        try { await videoSender.replaceTrack(videoTrack); } catch (err) { console.warn(err); }
       }
-      const audioSender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
-      const audioTrack = stream.getAudioTracks()[0] || null;
-      if (audioSender && audioTrack) {
+      const audioTrack = stream.getAudioTracks().find((t) => t.readyState === 'live') || null;
+      const audioSender = senderByKind(pc, 'audio');
+      if (audioTrack && audioSender) {
         try { await audioSender.replaceTrack(audioTrack); } catch (err) { console.warn(err); }
+      } else if (audioTrack && !audioSender) {
+        try { pc.addTrack(audioTrack, stream); } catch (err) { console.warn(err); }
       }
     }
     if (motionRecording && motionRecorder) {
@@ -774,10 +850,15 @@
     startComposeLoop();
 
     const canvasStream = composeCanvas.captureStream(24);
-    const audioTrack =
+    let audioTrack =
       userStream.getAudioTracks()[0] ||
       envStream.getAudioTracks()[0] ||
       null;
+    if (!audioTrack) {
+      const micOnly = new MediaStream();
+      await ensureMicOnStream(micOnly);
+      audioTrack = micOnly.getAudioTracks()[0] || null;
+    }
     const outbound = new MediaStream([
       ...canvasStream.getVideoTracks(),
       ...(audioTrack ? [audioTrack] : []),
@@ -798,6 +879,7 @@
     await releaseRawCameras();
 
     const stream = await openCamera(facingMode, { withAudio: true });
+    await ensureMicOnStream(stream);
     // Drop old outbound (canvas or previous cam) after new stream is ready
     if (localStream && localStream !== stream) {
       localStream.getTracks().forEach((t) => {
@@ -935,11 +1017,13 @@
     let eco = false;
     let torchAvailable = false;
     let ecoAvailable = false;
+    let nativeDetect = false;
     try {
       if (native?.getCapabilities) {
         const caps = JSON.parse(native.getCapabilities() || '{}');
         torchAvailable = !!caps.torch;
         ecoAvailable = !!caps.eco;
+        nativeDetect = !!caps.phone_detect;
       }
       if (native?.isTorchOn) torch = !!native.isTorchOn();
       if (native?.isEcoOn) eco = !!native.isEcoOn();
@@ -953,6 +1037,10 @@
       record_motion: !!document.getElementById('recordOnMotion')?.checked,
       motion_settings: {
         sensitivity: motionSettings.sensitivity,
+        sound_enabled: !!motionSettings.sound_enabled,
+        sound_sensitivity: motionSettings.sound_sensitivity,
+        sound_threshold: soundThreshold(),
+        sound_level: lastSoundRms,
         cooldown_sec: motionSettings.cooldown_sec,
         interval_ms: motionSettings.interval_ms,
         sectors: motionSettings.sectors.slice(),
@@ -972,6 +1060,13 @@
       eco_available: ecoAvailable || !!native?.setEco,
       native: !!native,
       online: ws?.readyState === WebSocket.OPEN,
+      analytics: {
+        enabled: !!analyticsPrefs.enabled,
+        phone_assist: !!analyticsPrefs.phone_assist,
+        trigger_mode: analyticsPrefs.trigger_mode || 'motion',
+        native_detect: nativeDetect,
+        last_classes: lastPhoneHints.map((h) => h.cls).filter(Boolean).slice(0, 6),
+      },
     };
   }
 
@@ -1038,6 +1133,10 @@
         }
       } else if (action === 'motion_sensitivity') {
         setMotionSettings({ sensitivity: Number(value) });
+      } else if (action === 'motion_sound_enabled') {
+        setMotionSettings({ sound_enabled: !!value });
+      } else if (action === 'motion_sound_sensitivity') {
+        setMotionSettings({ sound_sensitivity: Number(value) });
       } else if (action === 'motion_cooldown') {
         setMotionSettings({ cooldown_sec: Number(value) });
       } else if (action === 'motion_interval') {
@@ -1129,7 +1228,7 @@
 
   async function createOfferForViewer(viewerChannel) {
     try {
-      await ensureMedia();
+    await ensureMedia();
     } catch (err) {
       console.error(err);
       if (ws?.readyState === WebSocket.OPEN) {
@@ -1158,7 +1257,16 @@
     }
     const pc = new RTCPeerConnection(ICE);
     peers.set(viewerChannel, pc);
-    localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+    const videoTrack = localStream.getVideoTracks()[0];
+    const audioTrack = localStream.getAudioTracks().find((t) => t.readyState === 'live') || null;
+    if (videoTrack) pc.addTrack(videoTrack, localStream);
+    if (audioTrack) {
+      pc.addTrack(audioTrack, localStream);
+    } else {
+      // Reserve audio m-line so mic can be attached later without full renegotiation gaps.
+      pc.addTransceiver('audio', { direction: 'sendonly' });
+    }
+    window.HomeBoardWebRTC?.preferH264?.(pc);
     pc.onicecandidate = (ev) => {
       if (ev.candidate && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -1183,6 +1291,134 @@
     setStatus('Offer sent · waiting viewer');
   }
 
+  function disconnectSoundAnalyser() {
+    try { soundSource?.disconnect(); } catch (_) { /* ignore */ }
+    try { soundAnalyser?.disconnect(); } catch (_) { /* ignore */ }
+    soundSource = null;
+    soundAnalyser = null;
+    soundData = null;
+    soundTrackId = null;
+  }
+
+  function ensureSoundAnalyser() {
+    const track = localStream?.getAudioTracks?.()?.find((t) => t.readyState === 'live') || null;
+    if (!track) {
+      disconnectSoundAnalyser();
+      return false;
+    }
+    if (soundAnalyser && soundTrackId === track.id) return true;
+    disconnectSoundAnalyser();
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      if (!soundAudioCtx || soundAudioCtx.state === 'closed') {
+        soundAudioCtx = new AC();
+      }
+      if (soundAudioCtx.state === 'suspended') {
+        soundAudioCtx.resume().catch(() => {});
+      }
+      soundSource = soundAudioCtx.createMediaStreamSource(new MediaStream([track]));
+      soundAnalyser = soundAudioCtx.createAnalyser();
+      soundAnalyser.fftSize = 2048;
+      soundAnalyser.smoothingTimeConstant = 0.8;
+      soundSource.connect(soundAnalyser);
+      soundData = new Uint8Array(soundAnalyser.fftSize);
+      soundTrackId = track.id;
+      return true;
+    } catch (err) {
+      console.warn('sound analyser', err);
+      disconnectSoundAnalyser();
+      return false;
+    }
+  }
+
+  function measureSoundRms() {
+    if (!ensureSoundAnalyser() || !soundAnalyser || !soundData) return null;
+    soundAnalyser.getByteTimeDomainData(soundData);
+    let sum = 0;
+    for (let i = 0; i < soundData.length; i++) {
+      const v = (soundData[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.sqrt(sum / soundData.length);
+  }
+
+  function tickSound() {
+    const rms = measureSoundRms();
+    if (rms == null) {
+      lastSoundRms = 0;
+      const nowLabel = document.getElementById('motionSoundNowLabel');
+      const fill = document.getElementById('motionSoundFill');
+      if (nowLabel) nowLabel.textContent = 'н/д';
+      if (fill) fill.style.width = '0%';
+      if (motionSoundLiveEl) {
+        motionSoundLiveEl.textContent = motionSettings?.sound_enabled
+          ? 'Mic: немає аудіо в стрімі (перезапустіть Start з дозволом мікрофона)'
+          : 'Mic: немає аудіо · рівень недоступний';
+      }
+      emitSoundLevel(0, { available: false });
+      return;
+    }
+    lastSoundRms = rms;
+    const thr = soundThreshold();
+    const score = Math.round(rms * 100);
+    const nowLabel = document.getElementById('motionSoundNowLabel');
+    const fill = document.getElementById('motionSoundFill');
+    const meter = document.getElementById('motionSoundMeter');
+    if (nowLabel) nowLabel.textContent = String(score);
+    if (fill) {
+      const pct = Math.max(0, Math.min(100, Math.round((rms / 0.28) * 100)));
+      fill.style.width = `${pct}%`;
+    }
+    if (meter) meter.classList.toggle('hot', rms >= thr);
+    if (motionSoundLiveEl) {
+      const mode = motionSettings?.sound_enabled ? 'реакція увімкнена' : 'лише індикатор';
+      motionSoundLiveEl.textContent =
+        `Mic: ${rms.toFixed(3)} / поріг ${thr.toFixed(3)} · ${mode}`;
+    }
+    emitSoundLevel(rms, { available: true, threshold: thr });
+
+    if (!motionSettings?.sound_enabled) return;
+    if (!document.getElementById('motionEnabled')?.checked) return;
+    if (!isMotionScheduleActive()) return;
+    if (rms > thr && Date.now() > motionCooldownUntil) {
+      motionCooldownUntil = Date.now() + motionSettings.cooldown_sec * 1000;
+      const snap = captureMotionSnapshot();
+      onMotion(snap || document.createElement('canvas'), {
+        score: rms * 100,
+        thr: thr * 100,
+        hot: [],
+        source: 'sound',
+      });
+    }
+  }
+
+  let lastSoundEmitAt = 0;
+  function emitSoundLevel(rms, { available = true, threshold = null } = {}) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !creds?.camera_id) return;
+    const now = Date.now();
+    if (now - lastSoundEmitAt < 250) return;
+    lastSoundEmitAt = now;
+    ws.send(JSON.stringify({
+      type: 'sound_level',
+      camera_id: creds.camera_id,
+      level: Number((Number(rms) || 0).toFixed(4)),
+      threshold: Number((threshold != null ? threshold : soundThreshold()).toFixed(4)),
+      available: !!available,
+      sound_enabled: !!motionSettings?.sound_enabled,
+    }));
+  }
+
+  function startSoundMonitor() {
+    stopSoundMonitor();
+    soundTimer = setInterval(tickSound, 200);
+  }
+
+  function stopSoundMonitor() {
+    if (soundTimer) clearInterval(soundTimer);
+    soundTimer = null;
+  }
+
   function startMotion() {
     stopMotion();
     if (!motionSettings) motionSettings = loadMotionSettings();
@@ -1191,6 +1427,8 @@
     const cellW = MOTION_W / MOTION_COLS;
     const cellH = MOTION_H / MOTION_ROWS;
     const interval = motionSettings.interval_ms || 400;
+
+    startSoundMonitor();
 
     motionTimer = setInterval(() => {
       if (!document.getElementById('motionEnabled')?.checked) return;
@@ -1235,7 +1473,7 @@
         lastHotSectors = hot;
         if (motionLiveScoreEl) {
           motionLiveScoreEl.textContent =
-            `Score: ${score.toFixed(1)} / поріг ${thr} · сектори: ${hot.map((n) => n + 1).join(',') || '—'}`;
+            `Відео: ${score.toFixed(1)} / поріг ${thr} · сектори: ${hot.map((n) => n + 1).join(',') || '—'}`;
         }
         if (motionSettings.show_overlay) renderMotionOverlay();
         else if (motionSectorGrid && !motionPanel?.hidden) renderSectorGrid();
@@ -1257,7 +1495,7 @@
               .map((x) => x.s);
           }
           lastHotSectors = hotSectors;
-          onMotion(canvas, { score, thr, hot: hotSectors });
+          onMotion(canvas, { score, thr, hot: hotSectors, source: 'video' });
         }
       }
       lastFrame = frame;
@@ -1267,6 +1505,7 @@
   function stopMotion() {
     if (motionTimer) clearInterval(motionTimer);
     motionTimer = null;
+    stopSoundMonitor();
     lastFrame = null;
   }
 
@@ -1290,6 +1529,160 @@
     } catch (_) { /* ignore */ }
   }
 
+  async function refreshAnalyticsPrefs() {
+    if (!creds?.camera_id || !creds?.device_token) return;
+    try {
+      const res = await fetch('/analytics/api/device/settings/', {
+        headers: {
+          'X-Camera-Id': creds.camera_id,
+          'X-Device-Token': creds.device_token,
+        },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      analyticsPrefs = {
+        enabled: !!data.enabled,
+        phone_assist: !!data.phone_assist,
+        trigger_mode: data.trigger_mode || 'motion',
+        fps: Math.max(0.5, Math.min(2, Number(data.fps) || 1)),
+        classes: Array.isArray(data.classes) ? data.classes : analyticsPrefs.classes,
+      };
+      if (analyticsPrefs.phone_assist) {
+        window.HomeBoardPhoneAI?.ensure?.(analyticsPrefs.classes);
+      }
+      updateAiStatusUi();
+      syncAnalyticsTimer();
+    } catch (_) { /* ignore */ }
+  }
+
+  function syncAnalyticsTimer() {
+    if (analyticsTimer) {
+      clearInterval(analyticsTimer);
+      analyticsTimer = null;
+    }
+    if (!analyticsPrefs.enabled || analyticsPrefs.trigger_mode !== 'continuous') return;
+    const ms = Math.max(500, Math.round(1000 / analyticsPrefs.fps));
+    analyticsTimer = setInterval(() => {
+      uploadAnalyticsFrame({ source: 'continuous' }).catch(() => {});
+    }, ms);
+  }
+
+  async function uploadAnalyticsFrame({ source = 'motion', motionEventId = null } = {}) {
+    if (!analyticsPrefs.enabled || !creds?.camera_id || !creds?.device_token) return null;
+    const gap = 1000 / Math.max(0.5, analyticsPrefs.fps || 1);
+    if (Date.now() - lastAnalyticsUploadAt < gap - 20) return null;
+    const snap = captureMotionSnapshot();
+    if (!snap) return null;
+
+    let phoneHints = [];
+    if (analyticsPrefs.phone_assist && window.HomeBoardPhoneAI?.detect) {
+      try {
+        phoneHints = await window.HomeBoardPhoneAI.detect(snap, analyticsPrefs.classes) || [];
+      } catch (_) {
+        phoneHints = [];
+      }
+      // If assist is on and nothing interesting — skip continuous uploads
+      if (source === 'continuous' && (!phoneHints || !phoneHints.length)) {
+        drawAiOverlay([], snap);
+        return null;
+      }
+    } else {
+      drawAiOverlay([], snap);
+    }
+
+    lastPhoneHints = phoneHints || [];
+    drawAiOverlay(lastPhoneHints, snap);
+
+    const blob = await new Promise((r) => snap.toBlob(r, 'image/jpeg', 0.72));
+    if (!blob) return null;
+    const fd = new FormData();
+    fd.append('frame', blob, `ai-${Date.now()}.jpg`);
+    fd.append('source', source);
+    if (motionEventId) fd.append('motion_event_id', String(motionEventId));
+    if (phoneHints.length) fd.append('phone_hints', JSON.stringify(phoneHints));
+    lastAnalyticsUploadAt = Date.now();
+    const res = await fetch('/analytics/api/frame/', {
+      method: 'POST',
+      headers: {
+        'X-Camera-Id': creds.camera_id,
+        'X-Device-Token': creds.device_token,
+      },
+      body: fd,
+    });
+    if (!res.ok) return null;
+    return res.json().catch(() => null);
+  }
+
+  function updateAiStatusUi() {
+    const el = document.getElementById('aiStatus');
+    const native = (() => {
+      try {
+        return !!JSON.parse(nativeBridge()?.getCapabilities?.() || '{}').phone_detect;
+      } catch {
+        return false;
+      }
+    })();
+    if (el) {
+      if (!analyticsPrefs.enabled) {
+        el.hidden = true;
+      } else {
+        el.hidden = false;
+        el.textContent = analyticsPrefs.phone_assist
+          ? (native ? 'AI · телефон' : 'AI · on-device')
+          : 'AI · сервер';
+      }
+    }
+    if (!analyticsPrefs.enabled || !analyticsPrefs.phone_assist) {
+      drawAiOverlay([], null);
+    }
+    try {
+      nativeBridge()?.onAnalyticsStatus?.(JSON.stringify({
+        enabled: !!analyticsPrefs.enabled,
+        phone_assist: !!analyticsPrefs.phone_assist,
+        trigger_mode: analyticsPrefs.trigger_mode || 'motion',
+      }));
+    } catch (_) { /* ignore */ }
+  }
+
+  function drawAiOverlay(hints, srcCanvas) {
+    const ov = document.getElementById('aiOverlay');
+    if (!ov) return;
+    const list = Array.isArray(hints) ? hints : [];
+    const w = srcCanvas?.width || 0;
+    const h = srcCanvas?.height || 0;
+    if (!w || !h || !list.length) {
+      ov.hidden = true;
+      const ctxEmpty = ov.getContext('2d');
+      if (ctxEmpty && ov.width && ov.height) ctxEmpty.clearRect(0, 0, ov.width, ov.height);
+      return;
+    }
+    ov.hidden = false;
+    ov.width = w;
+    ov.height = h;
+    const ctx = ov.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = `${Math.max(12, Math.round(w / 42))}px sans-serif`;
+    ctx.lineWidth = Math.max(2, w / 360);
+    list.forEach((p) => {
+      const box = p.xyxy || [];
+      if (box.length < 4) return;
+      const x = Number(box[0]) || 0;
+      const y = Number(box[1]) || 0;
+      const bw = (Number(box[2]) || 0) - x;
+      const bh = (Number(box[3]) || 0) - y;
+      ctx.strokeStyle = 'rgba(61,214,198,0.95)';
+      ctx.strokeRect(x, y, bw, bh);
+      const label = `${p.cls || '?'} ${Math.round((Number(p.conf) || 0) * 100)}%`;
+      const tw = ctx.measureText(label).width + 8;
+      const th = Math.max(16, Math.round(w / 38));
+      const ly = Math.max(0, y - th);
+      ctx.fillStyle = 'rgba(11,15,20,0.75)';
+      ctx.fillRect(x, ly, tw, th);
+      ctx.fillStyle = '#3DD6C6';
+      ctx.fillText(label, x + 4, ly + th - 4);
+    });
+  }
+
   function captureMotionSnapshot() {
     const src = dualMode ? composeCanvas : localVideo;
     const sw = dualMode ? (composeCanvas.width || 0) : (localVideo.videoWidth || 0);
@@ -1308,22 +1701,31 @@
   }
 
   async function onMotion(canvas, meta = {}) {
+    const source = meta.source === 'sound' ? 'sound' : 'video';
     const hot = Array.isArray(meta.hot) ? meta.hot.map((n) => Number(n)).filter((n) => n >= 0) : [];
     const hotLabel = hot.map((n) => n + 1).join(',') || '—';
-    setStatus(`Motion! s${(meta.score || 0).toFixed(0)} [${hotLabel}]`);
-    const snap = captureMotionSnapshot() || canvas;
+    setStatus(
+      source === 'sound'
+        ? `Sound! ${(meta.score || 0).toFixed(0)}`
+        : `Motion! s${(meta.score || 0).toFixed(0)} [${hotLabel}]`,
+    );
+    const snap = (source === 'sound' ? captureMotionSnapshot() : null) || canvas || captureMotionSnapshot();
     const quality = telegramPrefs.jpeg_quality || 0.7;
-    const blob = telegramPrefs.send_screenshot === false
-      ? null
-      : await new Promise((r) => snap.toBlob(r, 'image/jpeg', quality));
+    let blob = null;
+    if (snap && telegramPrefs.send_screenshot !== false && typeof snap.toBlob === 'function') {
+      blob = await new Promise((r) => snap.toBlob(r, 'image/jpeg', quality));
+    }
     const fd = new FormData();
     fd.append(
       'note',
-      `auto score=${(meta.score || 0).toFixed(1)} thr=${meta.thr || motionThreshold()} sectors=${hotLabel}`,
+      source === 'sound'
+        ? `auto source=sound level=${(meta.score || 0).toFixed(1)} thr=${meta.thr || (soundThreshold() * 100)}`
+        : `auto source=video score=${(meta.score || 0).toFixed(1)} thr=${meta.thr || motionThreshold()} sectors=${hotLabel}`,
     );
     fd.append('score', String(meta.score || 0));
-    fd.append('threshold', String(meta.thr || motionThreshold()));
+    fd.append('threshold', String(meta.thr || (source === 'sound' ? soundThreshold() * 100 : motionThreshold())));
     fd.append('sectors', JSON.stringify(hot));
+    fd.append('source', source);
     if (blob) fd.append('thumbnail', blob, 'motion.jpg');
     const res = await fetch('/motion/api/report/', {
       method: 'POST',
@@ -1337,6 +1739,10 @@
       const data = await res.json();
       lastMotionEventId = data.event_id;
     }
+    uploadAnalyticsFrame({
+      source: source === 'sound' ? 'sound' : 'motion',
+      motionEventId: lastMotionEventId,
+    }).catch(() => {});
     if (document.getElementById('recordOnMotion').checked) {
       startClipRecording();
     }
@@ -1348,7 +1754,7 @@
     recordedChunks = [];
     const mime = window.HomeBoardLocalStore?.pickMime?.()
       || (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
-        ? 'video/webm;codecs=vp8,opus'
+      ? 'video/webm;codecs=vp8,opus'
         : 'video/webm');
     motionRecorder = new MediaRecorder(localStream, { mimeType: mime });
     motionRecorder.ondataavailable = (e) => {
@@ -1367,8 +1773,9 @@
     const blob = new Blob(recordedChunks, { type: 'video/webm' });
     const fd = new FormData();
     fd.append('file', blob, `clip-${Date.now()}.webm`);
-    fd.append('trigger', 'motion');
+    fd.append('trigger', analyticsPrefs.enabled ? 'detection' : 'motion');
     if (lastMotionEventId) fd.append('motion_event_id', lastMotionEventId);
+    if (lastDetectionEventId) fd.append('detection_event_id', lastDetectionEventId);
     await fetch('/recordings/api/upload/', {
       method: 'POST',
       headers: {
@@ -1381,6 +1788,11 @@
 
   function hardStopMedia() {
     stopMotion();
+    if (analyticsTimer) {
+      clearInterval(analyticsTimer);
+      analyticsTimer = null;
+    }
+    disconnectSoundAnalyser();
     stopCompose();
     if (loopRecorder?.active) {
       loopRecorder.stop().catch(() => {});
@@ -1403,6 +1815,8 @@
     previewWrap.classList.remove('dual-mode');
     composeCanvas.hidden = true;
     localVideo.hidden = false;
+    drawAiOverlay([], null);
+    lastPhoneHints = [];
   }
 
   document.getElementById('btnPair').onclick = async () => {
@@ -1453,6 +1867,8 @@
   function syncMotionFromInputs() {
     setMotionSettings({
       sensitivity: Number(motionSensEl?.value || motionSettings.sensitivity),
+      sound_enabled: !!motionSoundEnabledEl?.checked,
+      sound_sensitivity: Number(motionSoundSensEl?.value || motionSettings.sound_sensitivity),
       cooldown_sec: Number(motionCdEl?.value || motionSettings.cooldown_sec),
       interval_ms: Number(motionIntervalEl?.value || motionSettings.interval_ms),
       show_overlay: !!motionShowOverlayEl?.checked,
@@ -1479,6 +1895,12 @@
     document.getElementById('motionSensLabel').textContent = motionSensEl.value;
   });
   motionSensEl?.addEventListener('change', syncMotionFromInputs);
+  motionSoundEnabledEl?.addEventListener('change', syncMotionFromInputs);
+  motionSoundSensEl?.addEventListener('input', () => {
+    const el = document.getElementById('motionSoundSensLabel');
+    if (el) el.textContent = motionSoundSensEl.value;
+  });
+  motionSoundSensEl?.addEventListener('change', syncMotionFromInputs);
   motionCdEl?.addEventListener('input', () => {
     document.getElementById('motionCdLabel').textContent = motionCdEl.value;
   });
@@ -1534,6 +1956,7 @@
       document.getElementById('btnStop').disabled = false;
       await syncLocalLoop();
       await refreshTelegramPrefs();
+      await refreshAnalyticsPrefs();
       emitState();
     } catch (err) {
       console.error(err);
@@ -1574,6 +1997,7 @@
     setStatus('Готово до стріму');
     ensureLoopRecorder()?.refreshUsage();
     refreshTelegramPrefs();
+    refreshAnalyticsPrefs();
     maybeAutostart();
   }
 
@@ -1605,6 +2029,12 @@
   creds = loadCreds();
   if (creds?.camera_id && creds?.device_token) showLive();
   else ensureLoopRecorder()?.refreshUsage();
+
+  setInterval(() => {
+    if (creds?.camera_id && creds?.device_token) {
+      refreshAnalyticsPrefs();
+    }
+  }, 20000);
 
   const hint = document.getElementById('secure-hint');
   if (hint && !window.isSecureContext) {

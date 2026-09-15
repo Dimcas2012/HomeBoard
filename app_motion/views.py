@@ -12,10 +12,10 @@ from app_cameras.models import Camera
 from .models import MotionEvent
 
 
-def _notify_telegram(event, sectors, score):
+def _notify_telegram(event, sectors, score, source='video'):
     try:
         from app_integration.services import notify_motion
-        notify_motion(event, sectors=sectors, score=score)
+        notify_motion(event, sectors=sectors, score=score, source=source)
     except Exception:
         # Never fail motion report because of integrations.
         pass
@@ -43,6 +43,7 @@ def report_motion(request):
     score = None
     threshold = None
     sectors = []
+    source = 'video'
     if request.content_type and 'application/json' in request.content_type:
         try:
             payload = json.loads(request.body.decode('utf-8') or '{}')
@@ -50,18 +51,24 @@ def report_motion(request):
             score = payload.get('score')
             threshold = payload.get('threshold')
             sectors = payload.get('sectors') or []
+            source = (payload.get('source') or 'video')
         except json.JSONDecodeError:
             note = ''
     else:
         note = request.POST.get('note', '')
         score = request.POST.get('score')
         threshold = request.POST.get('threshold')
+        source = request.POST.get('source') or 'video'
         raw_sectors = request.POST.get('sectors', '')
         if raw_sectors:
             try:
                 sectors = json.loads(raw_sectors)
             except json.JSONDecodeError:
                 sectors = []
+
+    source = str(source or 'video').strip().lower()
+    if source not in ('video', 'sound'):
+        source = 'video'
 
     if not isinstance(sectors, list):
         sectors = []
@@ -98,11 +105,12 @@ def report_motion(request):
                 'sectors': sectors,
                 'score': score_f,
                 'threshold': thr_f,
+                'source': source,
             },
         },
     )
-    _notify_telegram(event, sectors, score_f)
-    return JsonResponse({'ok': True, 'event_id': event.id, 'sectors': sectors})
+    _notify_telegram(event, sectors, score_f, source)
+    return JsonResponse({'ok': True, 'event_id': event.id, 'sectors': sectors, 'source': source})
 
 
 @require_GET

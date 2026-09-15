@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'app_motion',
     'app_recordings',
     'app_integration.apps.AppIntegrationConfig',
+    'app_analytics.apps.AppAnalyticsConfig',
 ]
 
 MIDDLEWARE = [
@@ -78,6 +79,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'config.context_processors.static_bust',
             ],
         },
     },
@@ -190,3 +192,17 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+# AI analytics (Clearcam-style)
+ANALYTICS_DEVICE = os.getenv('ANALYTICS_DEVICE', 'cpu')
+ANALYTICS_YOLO_WEIGHTS = os.getenv('ANALYTICS_YOLO_WEIGHTS', str(BASE_DIR / 'models' / 'yolov8n.pt'))
+ANALYTICS_IMGSZ = int(os.getenv('ANALYTICS_IMGSZ', '640'))
+ANALYTICS_RELAY_URL = os.getenv(
+    'ANALYTICS_RELAY_URL',
+    'http://127.0.0.1:9011/analytics/api/internal_broadcast/',
+)
+ANALYTICS_RELAY_SECRET = os.getenv('ANALYTICS_RELAY_SECRET', '') or SECRET_KEY[:32]
+OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434')
+OLLAMA_VISION_MODEL = os.getenv('OLLAMA_VISION_MODEL', 'moondream')
+OLLAMA_TIMEOUT = float(os.getenv('OLLAMA_TIMEOUT', '300'))
+OLLAMA_NUM_PREDICT = int(os.getenv('OLLAMA_NUM_PREDICT', '48'))
