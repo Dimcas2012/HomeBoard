@@ -13,6 +13,21 @@ from .models import Camera, PairingCode
 @require_POST
 def create_pairing_code(request):
     name = request.POST.get('name') or 'Camera'
+    camera_id = (request.POST.get('camera_id') or '').strip()
+    if camera_id:
+        camera = get_object_or_404(Camera, id=camera_id, owner=request.user)
+        try:
+            pairing = PairingCode.create_reconnect_for_camera(camera)
+        except ValueError as exc:
+            return JsonResponse({'error': str(exc)}, status=400)
+        return JsonResponse({
+            'code': pairing.code,
+            'expires_at': pairing.expires_at.isoformat(),
+            'camera_name': pairing.camera_name,
+            'camera_id': str(camera.id),
+            'reconnect': True,
+        })
+
     pairing = PairingCode.create_for_user(request.user, camera_name=name)
     return JsonResponse({
         'code': pairing.code,

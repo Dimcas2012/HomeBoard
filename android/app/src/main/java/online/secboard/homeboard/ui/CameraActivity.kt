@@ -160,6 +160,10 @@ class CameraActivity : AppCompatActivity() {
         economy.enterEcoScreen(window)
         binding.ecoCover.visibility = View.VISIBLE
         binding.overlay.visibility = View.GONE
+        // Opaque overlay used to steal focus and freeze WebRTC; keep WebView alive under dim screen.
+        binding.webView.resumeTimers()
+        binding.webView.onResume()
+        keepStreamAliveInEco()
         Toast.makeText(
             this,
             if (analyticsEnabled) "Економ-режим: екран затемнено, стрім і AI працюють"
@@ -172,6 +176,25 @@ class CameraActivity : AppCompatActivity() {
         economy.exitEcoScreen(window)
         binding.ecoCover.visibility = View.GONE
         binding.overlay.visibility = View.VISIBLE
+        binding.webView.evaluateJavascript(
+            "(function(){ try { if (window.HomeBoardEco) window.HomeBoardEco(false); } catch(e) {} })();",
+            null,
+        )
+    }
+
+    /** Nudge WebView media tracks so Chromium does not park the camera while dimmed. */
+    private fun keepStreamAliveInEco() {
+        val js = """
+            (function() {
+              try {
+                if (window.HomeBoardEco) window.HomeBoardEco(true);
+                document.querySelectorAll('video').forEach(function(v) {
+                  try { v.play(); } catch (e) {}
+                });
+              } catch (e) {}
+            })();
+        """.trimIndent()
+        binding.webView.evaluateJavascript(js, null)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -340,8 +363,28 @@ class CameraActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
-        // не глушимо стрім у eco — лише при реальному виході з activity torch вимикаємо в onDestroy
+        // Never call webView.onPause() — it freezes getUserMedia / WebRTC.
+        if (economy.ecoScreenOn) {
+            binding.webView.resumeTimers()
+            binding.webView.onResume()
+            keepStreamAliveInEco()
+        }
         super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        binding.webView.onResume()
+        binding.webView.resumeTimers()
+        if (economy.ecoScreenOn) keepStreamAliveInEco()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus || economy.ecoScreenOn) {
+            binding.webView.resumeTimers()
+            binding.webView.onResume()
+        }
     }
 
     override fun onDestroy() {

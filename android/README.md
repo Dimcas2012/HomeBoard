@@ -25,7 +25,7 @@ cd android
 
 APK: `android/app/build/outputs/apk/debug/app-debug.apk`
 
-Версія: **1.2.0** (`versionCode` 6)
+Версія: **1.2.2** (`versionCode` 8)
 
 ## Використання
 

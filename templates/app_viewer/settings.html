@@ -15,7 +15,7 @@
   </header>
   <div class="settings-page">
     <h2>Browser-камери (pairing)</h2>
-    <p class="muted">Створіть код і введіть його на телефоні на сторінці <a href="{% url 'camera_mode' %}">/camera/</a>. Код дійсний 60 хвилин.</p>
+    <p class="muted">Створіть код і введіть його на телефоні на сторінці <a href="{% url 'camera_mode' %}">/camera/</a>. Код дійсний 60 хвилин. Для вже доданих камер код перепідключення показано нижче в списку.</p>
     <div class="row form-inline" style="margin:1rem 0">
       <input id="newCamName" value="Living Room" placeholder="Назва камери">
       <button class="btn" id="btnCreateCode" type="button">Створити код</button>
@@ -32,7 +32,7 @@
       </div>
       {% endif %}
       {% empty %}
-      <div class="empty muted">Активних кодів немає</div>
+      <div class="empty muted">Активних кодів для нових камер немає</div>
       {% endfor %}
     </div>
 
@@ -48,12 +48,27 @@
     <h2>Ваші камери</h2>
     <div class="card-list" id="camList">
       {% for cam in cameras %}
-      <div class="item" data-id="{{ cam.id }}">
-        <div>
+      <div class="item" data-id="{{ cam.id }}" data-source="{{ cam.source_type }}">
+        <div style="min-width:0;flex:1">
           <strong>{{ cam.name }}</strong>
           <div class="muted">{{ cam.get_source_type_display }} · {% if cam.is_online %}online{% else %}offline{% endif %}</div>
           {% if cam.source_type == 'rtsp' %}
             <div class="muted mono">{{ cam.rtsp_url }} → {{ cam.mediamtx_path }}</div>
+          {% elif cam.source_type == 'browser' %}
+            <div class="reconnect-box" data-reconnect-for="{{ cam.id }}">
+              {% if cam.reconnect_code %}
+              <div class="muted" style="margin-top:.35rem">Код перепідключення</div>
+              <div class="row" style="align-items:center;gap:.5rem;margin-top:.2rem;flex-wrap:wrap">
+                <strong class="mono reconnect-code" style="font-size:1.2rem;letter-spacing:.12em">{{ cam.reconnect_code }}</strong>
+                <button class="btn secondary btn-copy-code" type="button" data-code="{{ cam.reconnect_code }}">Копіювати</button>
+                <button class="btn secondary btn-regen-code" type="button">Новий код</button>
+              </div>
+              <div class="muted" style="font-size:.8rem;margin-top:.25rem">Введіть на телефоні в додатку або на <a href="{% url 'camera_mode' %}">/camera/</a></div>
+              {% else %}
+              <div class="muted" style="margin-top:.35rem">Коду ще немає</div>
+              <button class="btn secondary btn-regen-code" type="button" style="margin-top:.35rem">Створити код перепідключення</button>
+              {% endif %}
+            </div>
           {% endif %}
         </div>
         <button class="btn secondary btn-del" type="button">Видалити</button>
@@ -66,10 +81,38 @@
 </div>
 <script>
   const csrf = "{{ csrf_token }}";
+  const pairingUrl = '{% url "cameras:api_pairing" %}';
+
+  function toast(text) {
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = text;
+    let wrap = document.getElementById('toasts');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'toasts';
+      wrap.className = 'toast-wrap';
+      document.body.appendChild(wrap);
+    }
+    wrap.appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+  }
+
+  function renderReconnectBox(box, code) {
+    box.innerHTML = `
+      <div class="muted" style="margin-top:.35rem">Код перепідключення</div>
+      <div class="row" style="align-items:center;gap:.5rem;margin-top:.2rem;flex-wrap:wrap">
+        <strong class="mono reconnect-code" style="font-size:1.2rem;letter-spacing:.12em">${code}</strong>
+        <button class="btn secondary btn-copy-code" type="button" data-code="${code}">Копіювати</button>
+        <button class="btn secondary btn-regen-code" type="button">Новий код</button>
+      </div>
+      <div class="muted" style="font-size:.8rem;margin-top:.25rem">Введіть на телефоні в додатку або на /camera/</div>`;
+  }
+
   document.getElementById('btnCreateCode').onclick = async () => {
     const name = document.getElementById('newCamName').value || 'Camera';
     const body = new URLSearchParams({ name });
-    const res = await fetch('{% url "cameras:api_pairing" %}', {
+    const res = await fetch(pairingUrl, {
       method: 'POST',
       headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
@@ -91,6 +134,7 @@
     item.innerHTML = `<div><strong class="mono" style="font-size:1.25rem;letter-spacing:.12em">${data.code}</strong><div class="muted">${data.camera_name || name} · діє до ${expires}</div></div>`;
     list.prepend(item);
   };
+
   document.getElementById('btnAddRtsp').onclick = async () => {
     const res = await fetch('{% url "cameras:api_rtsp" %}', {
       method: 'POST',
@@ -104,12 +148,55 @@
     if (res.ok) location.reload();
     else alert((await res.json()).error || 'Помилка');
   };
-  document.querySelectorAll('.btn-del').forEach(btn => {
-    btn.onclick = async () => {
-      const id = btn.closest('.item').dataset.id;
+
+  document.getElementById('camList')?.addEventListener('click', async (ev) => {
+    const copyBtn = ev.target.closest('.btn-copy-code');
+    if (copyBtn) {
+      const code = copyBtn.dataset.code || copyBtn.closest('.reconnect-box')?.querySelector('.reconnect-code')?.textContent?.trim();
+      if (!code) return;
+      try {
+        await navigator.clipboard.writeText(code);
+        toast('Код скопійовано');
+      } catch (_) {
+        prompt('Скопіюйте код:', code);
+      }
+      return;
+    }
+
+    const regenBtn = ev.target.closest('.btn-regen-code');
+    if (regenBtn) {
+      const item = regenBtn.closest('.item');
+      const box = regenBtn.closest('.reconnect-box');
+      const id = item?.dataset?.id;
+      if (!id || !box) return;
+      regenBtn.disabled = true;
+      try {
+        const body = new URLSearchParams({ camera_id: id });
+        const res = await fetch(pairingUrl, {
+          method: 'POST',
+          headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+        });
+        const data = await res.json();
+        if (!res.ok || !data.code) {
+          alert(data.error || 'Не вдалося створити код');
+          return;
+        }
+        renderReconnectBox(box, data.code);
+        toast('Код перепідключення оновлено');
+      } finally {
+        regenBtn.disabled = false;
+      }
+      return;
+    }
+
+    const delBtn = ev.target.closest('.btn-del');
+    if (delBtn) {
+      const id = delBtn.closest('.item')?.dataset?.id;
+      if (!id) return;
       await fetch(`/cameras/api/${id}/delete/`, { method: 'POST', headers: { 'X-CSRFToken': csrf } });
       location.reload();
-    };
+    }
   });
 </script>
 {% endblock %}

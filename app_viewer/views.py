@@ -40,7 +40,10 @@ def camera_mode(request):
 @require_GET
 @never_cache
 def settings_panel(request):
-    cameras = Camera.objects.filter(owner=request.user)
+    cameras = (
+        Camera.objects.filter(owner=request.user)
+        .prefetch_related('pairing_origin')
+    )
     codes = [
         p for p in PairingCode.objects.filter(owner=request.user, used_at__isnull=True)
         if p.is_valid

@@ -55,9 +55,9 @@ class EconomyController(private val context: Context) {
         if (ecoScreenOn) return
         val lp = window.attributes
         savedBrightness = lp.screenBrightness
-        lp.screenBrightness = 0.01f
+        // Near-black, but not 0 — some OEMs treat 0 as "screen off" and kill the camera.
+        lp.screenBrightness = 0.02f
         window.attributes = lp
-        // екран залишається «увімкненим» для стріму, але майже чорний
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         ecoScreenOn = true
     }

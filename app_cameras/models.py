@@ -66,6 +66,18 @@ class Camera(models.Model):
         base = settings.MEDIAMTX_WEBRTC_URL.rstrip('/')
         return f'{base}/{path}/whep'
 
+    @property
+    def reconnect_pairing(self):
+        """Latest pairing code linked to this camera (for phone re-pair)."""
+        if self.source_type != self.SourceType.BROWSER:
+            return None
+        return self.pairing_origin.order_by('-expires_at', '-id').first()
+
+    @property
+    def reconnect_code(self):
+        p = self.reconnect_pairing
+        return p.code if p else None
+
 
 class PairingCode(models.Model):
     owner = models.ForeignKey(
@@ -104,8 +116,22 @@ class PairingCode(models.Model):
             code=generate_pairing_code(),
         )
 
+    @classmethod
+    def create_reconnect_for_camera(cls, camera, minutes=60 * 24 * 365):
+        """Code that always returns this existing camera (phone reinstall / new device)."""
+        if camera.source_type != Camera.SourceType.BROWSER:
+            raise ValueError('Перепідключення лише для browser-камер')
+        return cls.objects.create(
+            owner=camera.owner,
+            camera_name=camera.name,
+            expires_at=timezone.now() + timedelta(minutes=minutes),
+            code=generate_pairing_code(),
+            used_at=timezone.now(),
+            created_camera=camera,
+        )
+
     def consume(self):
-        """Activate pairing. If already used, re-return existing camera credentials."""
+        """Activate pairing. If already linked to a camera, re-return its credentials."""
         from django.db import transaction
 
         with transaction.atomic():

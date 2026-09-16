@@ -70,6 +70,9 @@
   let soundTrackId = null;
   let lastSoundRms = 0;
   let composeTimer = null;
+  let composeInterval = null;
+  let ecoKeepAliveTimer = null;
+  let ecoModeActive = false;
   let lastFrame = null;
   let recordedChunks = [];
   let lastMotionEventId = null;
@@ -534,6 +537,8 @@
   }
 
   let videoInputsCache = null;
+  let lastVideoDeviceId = null;
+  let cameraSwitchLock = Promise.resolve();
 
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
@@ -541,10 +546,13 @@
 
   function inferFacingFromLabel(label) {
     const s = String(label || '').toLowerCase();
-    if (/front|user|face|selfie|перед|фронт|facing\s*front/.test(s)) return 'user';
-    if (/back|rear|environment|world|задн|основ|facing\s*back|facing\s*rear|facing\s*environment/.test(s)) {
+    if (/front|user|face|selfie|перед|фронт|facing\s*front|facing[=:\s]*front/.test(s)) return 'user';
+    if (/back|rear|environment|world|задн|основ|facing\s*back|facing\s*rear|facing\s*environment|facing[=:\s]*back/.test(s)) {
       return 'environment';
     }
+    // Android Camera2 labels: "camera2 0, facing back"
+    if (/facing\s*back|facing\s*rear/.test(s)) return 'environment';
+    if (/facing\s*front/.test(s)) return 'user';
     return null;
   }
 
@@ -558,7 +566,7 @@
       try {
         const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         stopStream(tmp);
-        await sleep(isAndroidApp() ? 300 : 80);
+        await sleep(isAndroidApp() ? 450 : 80);
         devices = await navigator.mediaDevices.enumerateDevices();
         videos = devices.filter((d) => d.kind === 'videoinput');
       } catch (_) { /* ignore */ }
@@ -577,11 +585,28 @@
     return null;
   }
 
+  function trackDeviceId(track) {
+    try {
+      return track?.getSettings?.()?.deviceId || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function detachPeerMedia() {
+    for (const pc of peers.values()) {
+      for (const sender of pc.getSenders()) {
+        if (!sender.track) continue;
+        try { await sender.replaceTrack(null); } catch (_) { /* ignore */ }
+      }
+    }
+  }
+
   async function openCamera(facing, { withAudio = false, excludeDeviceIds = [] } = {}) {
     assertSecure();
     const mode = facing === 'user' ? 'user' : 'environment';
     const exclude = new Set((excludeDeviceIds || []).filter(Boolean));
-    const inputs = (await getVideoInputs()).filter((d) => !exclude.has(d.deviceId));
+    const inputs = (await getVideoInputs({ refresh: isAndroidApp() })).filter((d) => !exclude.has(d.deviceId));
 
     const preferred = [];
     const unknown = [];
@@ -591,74 +616,90 @@
       else if (!f) unknown.push(d);
     }
 
+    // Android often has empty/useless labels: typical order is [back, front].
+    if (isAndroidApp() && !preferred.length && inputs.length >= 2) {
+      const guess = mode === 'environment' ? inputs[0] : inputs[inputs.length - 1];
+      if (guess && !preferred.some((d) => d.deviceId === guess.deviceId)) preferred.push(guess);
+      const alt = mode === 'environment' ? inputs[inputs.length - 1] : inputs[0];
+      if (alt && alt.deviceId !== guess.deviceId) unknown.unshift(alt);
+    }
+
     const videoTries = [];
-    // 1) Known matching deviceIds
     for (const d of preferred) {
       videoTries.push({ deviceId: { exact: d.deviceId } });
       videoTries.push({ deviceId: { ideal: d.deviceId } });
     }
-    // 2) facingMode — critical on Android WebView (do NOT put bare `true` first)
     videoTries.push(
       { facingMode: { exact: mode } },
       { facingMode: { ideal: mode } },
       { facingMode: mode },
+      { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 } },
     );
-    // 3) Unlabeled devices last (labels often empty until after grant)
     for (const d of unknown) {
       videoTries.push({ deviceId: { exact: d.deviceId } });
       videoTries.push({ deviceId: { ideal: d.deviceId } });
     }
-    // Last resort only when we have no device list at all
+    // Absolute last resort: any other device not excluded
+    for (const d of inputs) {
+      videoTries.push({ deviceId: { exact: d.deviceId } });
+    }
     if (!inputs.length) videoTries.push(true);
 
     let lastErr;
+    const seenTry = new Set();
     for (const video of videoTries) {
+      const tryKey = JSON.stringify(video);
+      if (seenTry.has(tryKey)) continue;
+      seenTry.add(tryKey);
       for (const audio of withAudio ? [true, false] : [false]) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video, audio });
           const track = stream.getVideoTracks()[0];
           const got = trackFacing(track);
-          if (got && got !== mode) {
-            stopStream(stream);
-            continue;
-          }
-          const deviceId = track?.getSettings?.()?.deviceId;
+          const deviceId = trackDeviceId(track);
           if (deviceId && exclude.has(deviceId)) {
             stopStream(stream);
             continue;
           }
-          // Refresh labels after a successful open
+          // Only reject when the browser explicitly reports the opposite facing.
+          if (got && got !== mode) {
+            stopStream(stream);
+            continue;
+          }
+          if (deviceId) lastVideoDeviceId = deviceId;
           getVideoInputs({ refresh: true }).catch(() => {});
           return stream;
-      } catch (err) {
-        lastErr = err;
+        } catch (err) {
+          lastErr = err;
+        }
       }
     }
-    }
-      throw lastErr || new Error('Не вдалося відкрити камеру');
-    }
+    throw lastErr || new Error('Не вдалося відкрити камеру');
+  }
 
   function stopStream(stream) {
-    stream?.getTracks().forEach((t) => t.stop());
+    stream?.getTracks().forEach((t) => {
+      try { t.stop(); } catch (_) { /* ignore */ }
+    });
   }
 
   async function releaseRawCameras() {
     stopCompose();
+    // Detach from PeerConnection first — otherwise Android HAL stays busy and flip fails.
+    await detachPeerMedia();
     stopStream(rawPip);
     stopStream(rawMain);
+    if (localStream) {
+      stopStream(localStream);
+      localStream = null;
+    }
     rawPip = null;
     rawMain = null;
     if (localVideo) localVideo.srcObject = null;
     if (pipVideo) pipVideo.srcObject = null;
-    // Android WebView needs a beat to free the HAL camera before reopen
-    await sleep(isAndroidApp() ? 400 : 60);
-  }
-
-  function stopCompose() {
-    if (composeTimer) {
-      cancelAnimationFrame(composeTimer);
-      composeTimer = null;
-    }
+    videoInputsCache = null;
+    // Android WebView needs a longer beat to free the camera before reopen
+    await sleep(isAndroidApp() ? 750 : 60);
   }
 
   function drawCover(ctx, video, x, y, w, h, mirror = false) {
@@ -684,6 +725,41 @@
     ctx.restore();
   }
 
+  function stopCompose() {
+    if (composeTimer) {
+      cancelAnimationFrame(composeTimer);
+      composeTimer = null;
+    }
+    if (composeInterval) {
+      clearInterval(composeInterval);
+      composeInterval = null;
+    }
+  }
+
+  function paintComposeFrame(ctx, W, H) {
+    const envEl = localVideo;
+    const userEl = pipVideo;
+    const main = facingMode === 'environment' ? envEl : userEl;
+    const pip = facingMode === 'environment' ? userEl : envEl;
+
+    ctx.fillStyle = '#05070a';
+    ctx.fillRect(0, 0, W, H);
+    drawCover(ctx, main, 0, 0, W, H, main === userEl);
+
+    const pw = Math.round(W * 0.28);
+    const ph = Math.round(H * 0.28);
+    const mx = 16;
+    const my = 16;
+    const px = W - pw - mx;
+    const py = H - ph - my;
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    ctx.fillRect(px - 4, py - 4, pw + 8, ph + 8);
+    drawCover(ctx, pip, px, py, pw, ph, pip === userEl);
+    ctx.strokeStyle = 'rgba(61,214,198,.85)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(px - 1, py - 1, pw + 2, ph + 2);
+  }
+
   function startComposeLoop() {
     stopCompose();
     const ctx = composeCanvas.getContext('2d');
@@ -696,34 +772,61 @@
     pipVideo.hidden = true;
     previewWrap.classList.add('dual-mode');
 
-    const tick = () => {
-      // localVideo = environment, pipVideo = user
-      const envEl = localVideo;
-      const userEl = pipVideo;
-      const main = facingMode === 'environment' ? envEl : userEl;
-      const pip = facingMode === 'environment' ? userEl : envEl;
-
-      ctx.fillStyle = '#05070a';
-      ctx.fillRect(0, 0, W, H);
-      drawCover(ctx, main, 0, 0, W, H, main === userEl);
-
-      const pw = Math.round(W * 0.28);
-      const ph = Math.round(H * 0.28);
-      const mx = 16;
-      const my = 16;
-      const px = W - pw - mx;
-      const py = H - ph - my;
-      ctx.fillStyle = 'rgba(0,0,0,.55)';
-      ctx.fillRect(px - 4, py - 4, pw + 8, ph + 8);
-      drawCover(ctx, pip, px, py, pw, ph, pip === userEl);
-      ctx.strokeStyle = 'rgba(61,214,198,.85)';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(px - 1, py - 1, pw + 2, ph + 2);
-
-      composeTimer = requestAnimationFrame(tick);
-    };
-    tick();
+    // rAF throttles when WebView is dimmed/covered; interval keeps dual canvas stream alive in eco.
+    const useInterval = ecoModeActive || document.hidden;
+    if (useInterval) {
+      composeInterval = setInterval(() => paintComposeFrame(ctx, W, H), 1000 / 12);
+      paintComposeFrame(ctx, W, H);
+    } else {
+      const tick = () => {
+        paintComposeFrame(ctx, W, H);
+        composeTimer = requestAnimationFrame(tick);
+      };
+      tick();
+    }
   }
+
+  function keepMediaAlive() {
+    try {
+      [localStream, rawMain, rawPip].forEach((stream) => {
+        stream?.getTracks?.().forEach((t) => {
+          if (t.readyState === 'live' && !t.enabled) t.enabled = true;
+        });
+      });
+      [localVideo, pipVideo].forEach((v) => {
+        if (!v?.srcObject) return;
+        if (v.paused) v.play().catch(() => {});
+      });
+      if (dualMode && composeCanvas && !composeCanvas.hidden) {
+        if (!composeTimer && !composeInterval) startComposeLoop();
+        else if (ecoModeActive && composeTimer && !composeInterval) startComposeLoop();
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  function setEcoMode(on) {
+    ecoModeActive = !!on;
+    if (ecoKeepAliveTimer) {
+      clearInterval(ecoKeepAliveTimer);
+      ecoKeepAliveTimer = null;
+    }
+    if (ecoModeActive) {
+      keepMediaAlive();
+      ecoKeepAliveTimer = setInterval(keepMediaAlive, 2000);
+      if (dualMode) startComposeLoop();
+    } else if (dualMode && composeCanvas && !composeCanvas.hidden) {
+      startComposeLoop();
+    }
+  }
+
+  window.HomeBoardEco = setEcoMode;
+  window.HomeBoardKeepAlive = keepMediaAlive;
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) keepMediaAlive();
+    else if (ecoModeActive) keepMediaAlive();
+    if (dualMode && composeCanvas && !composeCanvas.hidden) startComposeLoop();
+  });
 
   async function ensureMicOnStream(stream) {
     if (!stream) return stream;
@@ -874,7 +977,7 @@
     return outbound;
   }
 
-  async function startSingleMedia() {
+  async function startSingleMedia({ excludeDeviceIds = [] } = {}) {
     previewWrap.classList.remove('dual-mode');
     composeCanvas.hidden = true;
     pipVideo.hidden = true;
@@ -882,7 +985,7 @@
 
     await releaseRawCameras();
 
-    const stream = await openCamera(facingMode, { withAudio: true });
+    const stream = await openCamera(facingMode, { withAudio: true, excludeDeviceIds });
     await ensureMicOnStream(stream);
     // Drop old outbound (canvas or previous cam) after new stream is ready
     if (localStream && localStream !== stream) {
@@ -891,6 +994,7 @@
       });
     }
     rawMain = stream;
+    lastVideoDeviceId = trackDeviceId(stream.getVideoTracks()[0]) || lastVideoDeviceId;
 
     localVideo.srcObject = stream;
     localVideo.muted = true;
@@ -909,34 +1013,87 @@
   }
 
   async function switchCamera(nextFacing) {
-    const target = nextFacing || (facingMode === 'user' ? 'environment' : 'user');
-    if (nextFacing && target === facingMode && localStream && !dualMode && rawMain) {
-      updateFacingUi();
-      return;
-    }
-    const prevFacing = facingMode;
-    setFacing(target);
-    if (!localStream && !rawMain) return;
-
-    try {
-      if (dualMode) {
-        setStatus(target === 'user' ? 'Головна: фронтальна' : 'Головна: задня');
+    const run = async () => {
+      const target = nextFacing || (facingMode === 'user' ? 'environment' : 'user');
+      if (nextFacing && target === facingMode && localStream && !dualMode && rawMain) {
         updateFacingUi();
-        setTimeout(() => {
-          setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
-        }, 600);
         return;
       }
-      setStatus(target === 'user' ? 'Фронтальна…' : 'Задня…');
-      await startSingleMedia();
-      setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
-    } catch (err) {
-      console.error(err);
-      setFacing(prevFacing);
-      setStatus('Не вдалося змінити камеру');
-      alert(err.message || String(err));
-      throw err;
-    }
+      const prevFacing = facingMode;
+      const prevDeviceId = lastVideoDeviceId;
+      setFacing(target);
+      if (!localStream && !rawMain && document.getElementById('btnStop')?.disabled !== false) {
+        // Not streaming yet — facing preference is saved for next start.
+        updateFacingUi();
+        return;
+      }
+
+      try {
+        if (dualMode) {
+          setStatus(target === 'user' ? 'Головна: фронтальна' : 'Головна: задня');
+          updateFacingUi();
+          setTimeout(() => {
+            setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
+          }, 600);
+          return;
+        }
+
+        // Fast path: same track supports facingMode switch (rare on phones).
+        const curTrack = localStream?.getVideoTracks?.()?.[0];
+        if (curTrack?.applyConstraints) {
+          try {
+            await curTrack.applyConstraints({ facingMode: { exact: target } });
+            const got = trackFacing(curTrack);
+            if (!got || got === target) {
+              lastVideoDeviceId = trackDeviceId(curTrack) || lastVideoDeviceId;
+              applyMirror();
+              updateFacingUi();
+              setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
+              emitState();
+              return;
+            }
+          } catch (_) { /* fall through to full reopen */ }
+        }
+
+        setStatus(target === 'user' ? 'Фронтальна…' : 'Задня…');
+        await startSingleMedia({
+          excludeDeviceIds: prevDeviceId ? [prevDeviceId] : [],
+        });
+        // If Android ignored facingMode and gave the same device, force the other deviceId.
+        const openedId = trackDeviceId(localStream?.getVideoTracks?.()?.[0]);
+        if (
+          isAndroidApp()
+          && prevDeviceId
+          && openedId
+          && openedId === prevDeviceId
+        ) {
+          const inputs = await getVideoInputs({ refresh: true });
+          const other = inputs.find((d) => d.deviceId && d.deviceId !== prevDeviceId);
+          if (other) {
+            setStatus('Перемикання пристрою…');
+            await startSingleMedia({ excludeDeviceIds: [prevDeviceId] });
+          }
+        }
+        updateFacingUi();
+        setStatus(peers.size ? 'Streaming' : (ws?.readyState === WebSocket.OPEN ? 'Online · очікування viewer' : 'Готово до стріму'));
+        emitState();
+      } catch (err) {
+        console.error(err);
+        setFacing(prevFacing);
+        lastVideoDeviceId = prevDeviceId;
+        setStatus('Не вдалося змінити камеру');
+        try {
+          if (!localStream?.getVideoTracks?.()?.some((t) => t.readyState === 'live')) {
+            await startSingleMedia();
+          }
+        } catch (_) { /* ignore */ }
+        alert(err.message || String(err));
+        throw err;
+      }
+    };
+    const next = cameraSwitchLock.then(run, run);
+    cameraSwitchLock = next.catch(() => {});
+    return next;
   }
 
   async function toggleDualMode(on) {
@@ -1276,6 +1433,7 @@
           const r = native.setEco(!!value);
           ok = r === true || r === 'true' || r === 1;
           if (!ok) error = 'Не вдалося змінити економ-режим';
+          else setEcoMode(!!value);
         }
       } else {
         ok = false;
