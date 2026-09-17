@@ -187,8 +187,23 @@ mediamtx/mediamtx.exe
 mediamtx/mediamtx.zip
 mediamtx/bin/
 
-
 logs/
+
+# Local TLS keys (never publish)
+certs/*.pem
+certs/*.key
+certs/*.crt
+!certs/README.md
+
+# Redis dump / local junk
+dump.rdb
+*.rdb
+
+# Android build outputs (source builds APK)
+android/dist/
+android-m/dist/
+android/.jdk/
+android-m/.jdk/
 
 # ML weights (download locally / via ultralytics)
 models/*.pt
