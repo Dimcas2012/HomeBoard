@@ -102,7 +102,7 @@ cd android
 
 ## Production notes
 
-- Example nginx config: [`deploy/homeboard.secboard.online.conf`](deploy/homeboard.secboard.online.conf)
+- Example nginx config: [`deploy/homeboard.yoursite.online.conf`](deploy/homeboard.yoursite.online.conf)
 - Example systemd unit: [`deploy/homeboard.service`](deploy/homeboard.service) — change `User` and paths for your server
 - Set `DEBUG=False`, a unique `SECRET_KEY`, and your own TURN (`TURN_URLS`, …) for WebRTC across NATs
 - Use `CHANNEL_LAYER=redis` + Redis when running multiple workers
