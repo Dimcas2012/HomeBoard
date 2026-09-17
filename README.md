@@ -1,34 +1,32 @@
 # HomeBoard
 
-Домашня система відеоспостереження: телефони й браузер як камери, ПК як монітор (Viewer), з motion-алертами, записами, RTSP/IP-камерами та AI-аналітикою.
+Self-hosted home video surveillance: phones and browsers as cameras, a PC as the monitor (**Viewer**), with motion alerts, recordings, RTSP/IP cameras, and AI analytics.
 
-**Live demo / prod:** [homeboard.secboard.online](https://homeboard.secboard.online)
-
-Inspired by [AlfredCamera WebViewer](https://alfred.camera/webapp/viewer/) — self-hosted, open source.
+> **Українською:** домашня система відеоспостереження (телефони/браузер → камери, ПК → Viewer), motion, записи, RTSP, AI. Деталі нижче англійською.
 
 ---
 
 ## Features
 
-- **Browser / Android cameras** — pairing-код, WebRTC live у сітці Viewer
-- **Remote control** — flip камери, dual (де підтримується), motion, запис, torch, eco-режим
-- **Talkback** — мікрофон Viewer → динаміки телефону
-- **Motion detection** — чутливість, сектори, алерти (Telegram)
-- **Recordings** — кліпи при русі, ліміти сховища, playback
-- **IP / RTSP** — через [MediaMTX](https://github.com/bluenviron/mediamtx) у ту ж сітку Viewer
-- **AI analytics** — YOLO (сервер), опційний on-device prefilter у Android WebView
+- **Browser / Android cameras** — pairing code, live WebRTC grid in the Viewer
+- **Remote control** — camera flip, dual (where the device allows), motion, recording, torch, eco mode
+- **Talkback** — Viewer microphone → phone speakers
+- **Motion detection** — sensitivity, sectors, alerts (Telegram)
+- **Recordings** — clips on motion, storage limits, playback
+- **IP / RTSP** — via [MediaMTX](https://github.com/bluenviron/mediamtx) into the same Viewer grid
+- **AI analytics** — YOLO on the server; optional on-device prefilter in the Android WebView
 
 ## Stack
 
 | Layer | Tech |
 |--------|------|
 | Backend | Django 6 + Channels (ASGI / Daphne) |
-| DB | MySQL (або інша через `DB_*`) |
+| Database | MySQL (or another engine via `DB_*`) |
 | Realtime | WebSocket signaling + WebRTC |
 | RTSP bridge | MediaMTX |
 | Mobile | Android WebView app (`android/`) |
 
-## Quick start (dev)
+## Quick start (development)
 
 ### 1. Python
 
@@ -39,7 +37,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Для AI-аналітики додатково:
+For AI analytics, also install:
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
@@ -50,50 +48,52 @@ pip install ultralytics opencv-python-headless
 
 ```bash
 copy .env.example .env
-# відредагуйте SECRET_KEY, DB_*, ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS
+# Edit SECRET_KEY, DB_*, ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS
 ```
+
+See [`.env.example`](.env.example) for all variables.
 
 ### 3. Database & migrate
 
-Створіть MySQL БД і користувача, потім:
+Create a MySQL database and user, then:
 
 ```bash
 python manage.py migrate
 python manage.py createsuperuser
 ```
 
-### 4. TLS (потрібно для `getUserMedia` на телефоні)
+### 4. TLS (required for `getUserMedia` on phones)
 
-Локальні сертифікати **не** входять у репозиторій. Згенеруйте self-signed:
+TLS certificates are **not** in this repository. Generate a self-signed cert for LAN:
 
 ```bash
 mkdir certs
 openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 825 -subj "/CN=10.1.10.123"
 ```
 
-Або див. `certs/README.md`.
+Replace `CN` with the IP/hostname phones will open. More detail: [`certs/README.md`](certs/README.md).
 
 ### 5. Run
 
 ```bash
-# HTTPS (рекомендовано для камер у LAN):
+# HTTPS (recommended for phone cameras on LAN):
 python manage.py runssl --addr 0.0.0.0 --port 8007
 
-# або Windows helper (Redis + runssl):
+# Or Windows helper (Redis + runssl):
 start_homeboard.bat
 ```
 
-Відкрийте:
+Open:
 
 - Viewer: `https://<host>:8007/viewer/`
-- Camera (браузер): `https://<host>:8007/camera/`
+- Camera (browser): `https://<host>:8007/camera/`
 - Admin: `https://<host>:8007/admin/`
 
-На телефоні підтвердіть самопідписаний сертифікат, інакше камера не відкриється.
+On the phone, accept/trust the self-signed certificate once — otherwise the camera will not start.
 
 ### 6. Android app
 
-Див. [`android/README.md`](android/README.md). Збірка:
+See [`android/README.md`](android/README.md). Build:
 
 ```bash
 cd android
@@ -102,26 +102,35 @@ cd android
 
 ## Production notes
 
-- Приклад nginx: [`deploy/homeboard.secboard.online.conf`](deploy/homeboard.secboard.online.conf)
-- Приклад systemd: [`deploy/homeboard.service`](deploy/homeboard.service) — замініть `User` / шляхи під свій сервер
-- `DEBUG=False`, унікальний `SECRET_KEY`, власний TURN (`TURN_URLS`…) для WebRTC через NAT
-- `CHANNEL_LAYER=redis` + Redis, якщо кілька workers
-- Static: `python manage.py collectstatic`
+- Example nginx config: [`deploy/homeboard.secboard.online.conf`](deploy/homeboard.secboard.online.conf)
+- Example systemd unit: [`deploy/homeboard.service`](deploy/homeboard.service) — change `User` and paths for your server
+- Set `DEBUG=False`, a unique `SECRET_KEY`, and your own TURN (`TURN_URLS`, …) for WebRTC across NATs
+- Use `CHANNEL_LAYER=redis` + Redis when running multiple workers
+- Collect static files: `python manage.py collectstatic`
 
-MediaMTX: [`mediamtx/README.md`](mediamtx/README.md)
+MediaMTX setup: [`mediamtx/README.md`](mediamtx/README.md)
 
 ## Security
 
-- **Ніколи** не комітьте `.env`, `certs/key.pem`, паролі БД
-- Перед публікацією переконайтесь, що в історії git немає секретів (див. нижче)
-- Self-signed LAN-сертифікати з репо видалено; згенеруйте свої локально
+- **Never** commit `.env`, `certs/key.pem`, or database passwords
+- Before going public, ensure secrets are not in git history
+- Sample LAN certificates were removed from the repo — generate your own locally
 
-Якщо колись у git потрапляли ключі — згенеруйте нові сертифікати / паролі й ротуйте їх на сервері.
+If keys were ever committed, rotate certificates and passwords on the server. See [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-MIT — див. [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
 ## Disclaimer
 
-Проєкт для домашнього / лабораторного використання. Автор не несе відповідальності за порушення локальних законів щодо відеоспостереження — дотримуйтесь правил приватності у вашій країні.
+Intended for home / lab use. You are responsible for complying with local privacy and surveillance laws.
+
+---
+
+## Коротко українською
+
+- **Старт:** `.venv` → `pip install -r requirements.txt` → скопіюйте `.env.example` у `.env` → `migrate` → `runssl`
+- **HTTPS обовʼязковий** для камери на телефоні; сертифікати генеруйте в `certs/` (не комітьте ключі)
+- **Viewer** `/viewer/`, **камера** `/camera/`, Android-клієнт у `android/`
+- **Прод:** приклади в `deploy/`; `DEBUG=False`, свій `SECRET_KEY` і TURN за потреби
